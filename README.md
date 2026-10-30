@@ -1,8 +1,9 @@
 # SincCity — Generic Scattering Calculator
 
 The orientationally averaged I(q) of a real-space structure, by the exact
-Debye formula: atoms from a **PDB** file, pixels from a SasView **SLD** file,
-or the cells of a legacy ASCII **VTK** mesh. It is the nuclear, 1D part of
+Debye formula: atoms from a **PDB** or GROMACS **GRO** file, pixels from a
+SasView **SLD** file, or the cells of a legacy ASCII **VTK** mesh. It is the
+nuclear, 1D part of
 SasView's *Generic Scattering Calculator*, as a plain Python package for
 scripts and notebooks. There are no 2D, magnetic or polarisation options.
 
@@ -65,18 +66,29 @@ scattering volume. This calculator does not.
 
 ## File formats
 
-Positions are in Å and SLDs in Å⁻² in all three.
+Positions are in Å and SLDs in Å⁻² in all four (a `.gro` file's nm are converted).
 
 | Format | What is read |
 |---|---|
-| PDB | `ATOM` records of the first model. `include_hetatm=True` adds `HETATM` records, never waters. One alternate-location ID for the whole structure, occupancy not applied. Elements from columns 77–78 (any case), else from the atom name. Each element gets SasView's SLD and *natural atomic volume* from periodictable; an unknown element is an error. `CONECT` bonds are drawn. |
+| PDB | `ATOM` records of the first model. `include_hetatm=True` adds `HETATM` records, never waters (`HOH`, `DOD`, `WAT` and the MD names `SOL`, `TIP3`, `TIP3P`, `TIP4P`, `SPC`, `SPCE`, `OPC`). One alternate-location ID for the whole structure, occupancy not applied. Residue names from columns 18–21, where MD programs write four-letter names. Elements from columns 77–78 (any case), else from the atom name. Each element gets SasView's SLD and *natural atomic volume* from periodictable; an unknown element is an error. `CONECT` bonds are drawn. A `CRYST1` box is stored unless it is the 1 Å placeholder. |
+| GRO | All atoms, cut at GROMACS's fixed columns (names may touch numbers; `-ndec` files are read). Velocities are ignored; the box comes from the last line. Elements are guessed from the atom names: leading digits dropped, then the first letter, except that a one-atom residue whose name is a two-letter element (`NA`, `CL`) is that element. So `CA` in a protein is carbon and a `CA` ion calcium. |
 | SLD | One header line, then `x y z sld`, `x y z sld mx my mz` or `x y z sld mx my mz volume`. Magnetic columns are ignored; six-column magnetic-only files are refused. Without a volume column the points must form a lattice and each pixel's volume is the product of the steps. A sparse subset that skips planes looks like a coarser lattice, so give such files the volume column. |
 | VTK | Legacy ASCII `UNSTRUCTURED_GRID` (classic or 5.1 layout) with tetrahedra, voxels, hexahedra, wedges and pyramids. The nuclear SLD is the one single-component `SCALARS` field, per cell or per point (averaged to cells as SasView does). Each cell becomes one point at its volume centroid. Binary files are refused with an export recipe. |
+
+**Selecting residues.** `load_structure(path, residues=['CTA'])` reads only
+the atoms of these residue names, from PDB and GRO files. When given, it is
+the whole selection: the PDB water and `HETATM` rules do not apply. A `.gro`
+file of a solvated system needs it; without it the reader notes how many
+residue names it read. Options a format does not have are ignored with a
+note. The structure keeps the options it was read with
+(`structure.reader_options`), so `get_settings()` records them however the
+structure was installed.
 
 The readers follow SasView's (`sas.sascalc.calculator.sas_gen`, BSD-3-Clause,
 Copyright (c) 2009-2026, SasView Developers) with one deviation: the VTK cell
 geometry is recomputed, because SasView's volumes for hexahedra, wedges and
-pyramids are wrong.
+pyramids are wrong. The GRO reader and the residue options come from
+coords2sans.
 
 ## Things to know
 

@@ -1,4 +1,4 @@
-"""Readers for PDB, SLD and legacy VTK structure files.
+"""Readers for PDB, GRO, SLD and legacy VTK structure files.
 
 All readers return a :class:`Structure` with positions in Å and SLD in Å⁻²,
 raise :class:`StructureError` on unusable input, and record the file's
@@ -6,19 +6,23 @@ SHA-256. Behaviour follows SasView's Generic Scattering Calculator readers
 (``sas.sascalc.calculator.sas_gen``, BSD-3-Clause, Copyright (c) 2009-2026,
 SasView Developers), with the deviations documented in the package README: the
 VTK cell geometry is recomputed, because SasView's volumes for hexahedra,
-wedges and pyramids are wrong.
+wedges and pyramids are wrong. The GRO reader and the residue options follow
+coords2sans.
 """
 
+import dataclasses
 import hashlib
 import os
 from collections import Counter
 
 import numpy as np
 
-from .elements import constants, guess_pdb
+from .elements import guess_pdb, guess_stem, sld_volume
 from .model import Structure, StructureError, detect_lattice
+from .molecules import residue_runs
 
-WATER_RESIDUES = ('HOH', 'DOD', 'WAT')
+#: Residue names of water, which the PDB reader drops unless ``residues`` is given.
+WATER_RESIDUES = ('HOH', 'DOD', 'WAT', 'SOL', 'TIP3', 'TIP3P', 'TIP4P', 'SPC', 'SPCE', 'OPC')
 
 
 def _hash_file(path: str) -> str | None:
@@ -33,23 +37,31 @@ def _hash_file(path: str) -> str | None:
         return None
 
 
-def load(path, *, include_hetatm: bool = False) -> Structure:
+def load(path, *, include_hetatm: bool = False, residues=None) -> Structure:
     """Read a structure file, choosing the reader by extension.
 
+    Options a format does not have are ignored with a note.
+
     Args:
-        path: A ``.pdb``, ``.sld`` (or ``.txt``) or ``.vtk`` file.
+        path: A ``.pdb``, ``.gro``, ``.sld`` (or ``.txt``) or ``.vtk`` file.
         include_hetatm: PDB only; also read ``HETATM`` records (never waters).
+        residues: PDB and GRO; the residue names to read, and only those.
     """
     extension = os.path.splitext(os.fspath(path))[1].lower()
-    if extension == '.pdb':
-        return read_pdb(path, include_hetatm=include_hetatm)
-    if extension in ('.sld', '.txt'):
-        return read_sld(path)
-    if extension == '.vtk':
-        return read_vtk(path)
-    raise StructureError(
-        f'Unknown structure file type {extension!r} for {path}. Use .pdb, .sld or .vtk.'
-    )
+    readers = {'.pdb': read_pdb, '.gro': read_gro, '.sld': read_sld, '.txt': read_sld}
+    reader = readers.get(extension, read_vtk if extension == '.vtk' else None)
+    if reader is None:
+        raise StructureError(
+            f'Unknown structure file type {extension!r} for {path}. Use .pdb, .gro, .sld or .vtk.'
+        )
+    options = {'include_hetatm': include_hetatm, 'residues': residues}
+    accepted = reader.__kwdefaults__ or {}
+    structure = reader(path, **{k: v for k, v in options.items() if k in accepted})
+    ignored = [k for k, v in options.items() if k not in accepted and v not in (None, False)]
+    if ignored:
+        note = f'Ignored {", ".join(ignored)}: not an option for {extension} files.'
+        structure = dataclasses.replace(structure, notes=(*structure.notes, note))
+    return structure
 
 
 def _source(path) -> tuple[str, str | None]:
@@ -59,33 +71,81 @@ def _source(path) -> tuple[str, str | None]:
     return path, _hash_file(path)
 
 
+def _names(residues) -> list[str] | None:
+    """The ``residues`` option as a JSON-ready list."""
+    if residues is None:
+        return None
+    return [residues] if isinstance(residues, str) else [str(name) for name in residues]
+
+
+def _box(lengths, triclinic: bool, notes: list[str]) -> tuple[float, float, float] | None:
+    """The rectangular box, or None with a note for a triclinic one."""
+    if triclinic:
+        notes.append('The periodic box is triclinic; it is not stored.')
+        return None
+    return tuple(float(length) for length in lengths)
+
+
+def _atoms(path, sha, format_, notes, options, *, symbols, **fields) -> Structure:
+    """The atom structure the PDB and GRO readers return."""
+    try:
+        sld, volume = sld_volume(symbols)
+    except StructureError as exc:
+        raise StructureError(f'{path}: {exc}') from exc
+    return Structure(
+        'atoms',
+        sld=sld,
+        volume=volume,
+        symbols=symbols,
+        reader_options=options,
+        source=path,
+        source_sha256=sha,
+        format=format_,
+        notes=tuple(notes),
+        **fields,
+    )
+
+
 # ============================================================================
 # PDB
 # ============================================================================
 
 
-def read_pdb(path, *, include_hetatm: bool = False) -> Structure:
+def read_pdb(path, *, include_hetatm: bool = False, residues=None) -> Structure:
     """Read the atoms of a PDB file.
 
     Policies: the first ``MODEL`` only; one alternate-location ID for the whole
     structure (blank plus the first non-blank ID seen); occupancy not applied;
     waters never read; elements from columns 77-78, else from the atom name.
-    Each policy that drops or ignores something adds a note.
+    Residue names are read from columns 18-21, where MD programs write
+    four-letter names. The ``CRYST1`` box is stored unless it is the 1 Å
+    placeholder. Each policy that drops or ignores something adds a note.
+
+    Args:
+        path: The PDB file.
+        include_hetatm: Also read ``HETATM`` records.
+        residues: The residue names to read. When given, it is the whole
+            selection: the water and ``HETATM`` rules do not apply.
     """
     path, sha = _source(path)
+    residues = _names(residues)
     with open(path, encoding='utf-8', errors='replace') as handle:
         lines = handle.read().splitlines()
 
     xyz, symbols, serials, conect = [], [], [], []
+    resids, resnames, names = [], [], []
     dropped_het: Counter = Counter()
     dropped_water = dropped_altloc = models = 0
     partial_occupancy = False
-    altloc_kept = None
+    altloc_kept = cryst = None
     for number, line in enumerate(lines, start=1):
         record = line[:6]
         if record == 'MODEL ':
             models += 1
         if models > 1:
+            continue
+        if record == 'CRYST1':
+            cryst = line
             continue
         if record == 'CONECT':
             fields = [line[i : i + 5].strip() for i in range(6, 31, 5)]
@@ -93,11 +153,14 @@ def read_pdb(path, *, include_hetatm: bool = False) -> Structure:
             continue
         if record not in ('ATOM  ', 'HETATM'):
             continue
-        residue = line[17:20].strip()
-        if residue in WATER_RESIDUES:
+        residue = line[17:21].strip()
+        if residues is not None:
+            if residue not in residues:
+                continue
+        elif residue in WATER_RESIDUES:
             dropped_water += 1
             continue
-        if record == 'HETATM' and not include_hetatm:
+        elif record == 'HETATM' and not include_hetatm:
             dropped_het[residue] += 1
             continue
         altloc = line[16:17].strip()
@@ -111,28 +174,21 @@ def read_pdb(path, *, include_hetatm: bool = False) -> Structure:
             symbol = line[76:78].strip() or guess_pdb(line)
             occupancy = line[54:60].strip()
             partial_occupancy |= bool(occupancy) and float(occupancy) < 1.0
+            resid = int(line[22:26].strip() or 0)
         except (ValueError, IndexError) as exc:
             raise StructureError(f'{path}, line {number}: cannot read the atom record.') from exc
         xyz.append(position)
         symbols.append(symbol[0].upper() + symbol[1:].lower())
+        resids.append(resid)
+        resnames.append(residue)
+        names.append(line[12:16].strip())
         serial = line[6:11].strip()
         serials.append(int(serial) if serial.isdigit() else None)
 
     if not xyz:
+        if residues is not None:
+            raise StructureError(f'{path} holds no atom of the residues {", ".join(residues)}.')
         raise StructureError(f'{path} contains no atom records.')
-
-    known, unknown = {}, []
-    for symbol in sorted(set(symbols)):
-        try:
-            known[symbol] = constants(symbol)
-        except StructureError:
-            unknown.append(symbol)
-    if unknown:
-        raise StructureError(
-            f'{path}: no neutron SLD or density for element(s) {", ".join(unknown)}.'
-        )
-    sld = np.array([known[s][0] for s in symbols])
-    volume = np.array([known[s][1] for s in symbols])
 
     index_of = {s: i for i, s in enumerate(serials) if s is not None}
     bonds = [
@@ -159,17 +215,102 @@ def read_pdb(path, *, include_hetatm: bool = False) -> Structure:
     if partial_occupancy:
         notes.append('Some atoms have occupancy below 1; occupancy is not applied.')
 
-    return Structure(
-        'atoms',
-        np.array(xyz),
-        sld,
-        volume,
+    box = None
+    if cryst is not None:
+        try:
+            lengths = [float(cryst[i : i + 9]) for i in (6, 15, 24)]
+            angles = [float(cryst[i : i + 7]) for i in (33, 40, 47)]
+        except ValueError as exc:
+            raise StructureError(f'{path}: cannot read the CRYST1 record.') from exc
+        if lengths != [1.0, 1.0, 1.0]:  # many programs write a 1 Ang placeholder
+            box = _box(lengths, angles != [90.0, 90.0, 90.0], notes)
+
+    return _atoms(
+        path,
+        sha,
+        'pdb',
+        notes,
+        {'include_hetatm': include_hetatm, 'residues': residues},
+        xyz=np.array(xyz),
         symbols=symbols,
+        resids=resids,
+        resnames=resnames,
+        names=names,
         bonds=np.array(bonds, dtype=int).reshape(-1, 2),
-        source=path,
-        source_sha256=sha,
-        format='pdb',
-        notes=tuple(notes),
+        box=box,
+    )
+
+
+# ============================================================================
+# GRO
+# ============================================================================
+
+
+def read_gro(path, *, residues=None) -> Structure:
+    """Read the atoms of a GROMACS ``.gro`` file.
+
+    Fields are cut at their fixed columns, since names may touch numbers. As
+    GROMACS defines it, the width of a position field is the distance between
+    the decimal points of the first atom's x and y, which covers files written
+    with ``-ndec``. Positions are converted from nm to Å; velocities are
+    ignored. Elements are guessed from the atom names (see
+    :func:`sinccity.elements.guess_stem`).
+
+    Args:
+        path: The ``.gro`` file.
+        residues: The residue names to read. A solvated system needs it: there
+            is no water rule, and the reader notes when it reads more than one
+            residue name without a selection.
+    """
+    path, sha = _source(path)
+    residues = _names(residues)
+    with open(path, encoding='utf-8', errors='replace') as handle:
+        lines = handle.read().splitlines()
+    try:
+        atoms = lines[2 : 2 + int(lines[1])]
+        box = [float(value) * 10 for value in lines[2 + len(atoms)].split()]
+        dot = atoms[0].index('.', 20)
+        width = atoms[0].index('.', dot + 1) - dot
+        columns = [slice(20 + k * width, 20 + (k + 1) * width) for k in range(3)]
+        resids = np.array([int(line[0:5]) for line in atoms])
+        resnames = np.array([line[5:10].strip() for line in atoms])
+        names = np.array([line[10:15].strip() for line in atoms])
+        xyz = np.array([[line[c] for c in columns] for line in atoms], dtype=float) * 10
+    except (IndexError, ValueError) as exc:
+        raise StructureError(f'{path} is not a readable .gro file ({exc}).') from exc
+    if len(box) not in (3, 9):
+        raise StructureError(f'{path}: the last line must hold 3 or 9 box values.')
+
+    notes = []
+    if residues is None:
+        found = sorted(set(resnames.tolist()))
+        if len(found) > 1:
+            notes.append(
+                f'Read {len(found)} residue names ({", ".join(found)}); pass residues= to '
+                'select the aggregate from its solvent.'
+            )
+    else:
+        kept = np.isin(resnames, residues)
+        if not kept.any():
+            raise StructureError(f'{path} holds no atom of the residues {", ".join(residues)}.')
+        resids, resnames, names, xyz = resids[kept], resnames[kept], names[kept], xyz[kept]
+
+    box = _box(box[:3], any(box[3:]), notes)
+    _, sizes = residue_runs(resids)
+    single = np.repeat(sizes == 1, sizes)
+    symbols = [guess_stem(name, one) for name, one in zip(names.tolist(), single)]
+    return _atoms(
+        path,
+        sha,
+        'gro',
+        notes,
+        {'residues': residues},
+        xyz=xyz,
+        symbols=symbols,
+        resids=resids,
+        resnames=resnames,
+        names=names,
+        box=box,
     )
 
 
@@ -230,6 +371,7 @@ def read_sld(path) -> Structure:
         source=path,
         source_sha256=sha,
         format='sld',
+        reader_options={},
         notes=tuple(notes),
     )
 
@@ -478,5 +620,6 @@ def read_vtk(path) -> Structure:
         source=path,
         source_sha256=sha,
         format='vtk',
+        reader_options={},
         notes=tuple(notes),
     )

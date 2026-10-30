@@ -1,6 +1,8 @@
 """The real-space structure a scattering calculation runs on."""
 
+import copy
 import html
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -95,9 +97,16 @@ class Structure:
         bonds: Index pairs from PDB ``CONECT`` records, atoms only.
         cell_diameter: Largest vertex-to-vertex distance per cell, cells only.
         lattice: The lattice the points sit on, pixels only.
+        resids, resnames, names: Residue number, residue name and atom name
+            per atom, from PDB and GRO files; None otherwise.
+        box: The rectangular periodic box the file declared, Å; None when it
+            declared none, a placeholder or a triclinic one.
+        reader_options: The options the reader was called with, every key
+            filled, so the file plus this dict rebuilds the structure. None
+            for structures no reader made.
         source: Absolute path of the file, or ``'in-memory'``.
         source_sha256: Hash of the file as read.
-        format: ``'pdb'``, ``'sld'``, ``'vtk'`` or ``'arrays'``.
+        format: ``'pdb'``, ``'gro'``, ``'sld'``, ``'vtk'`` or ``'arrays'``.
         notes: What the reader dropped, approximated or assumed.
     """
 
@@ -109,6 +118,11 @@ class Structure:
     bonds: np.ndarray | None = None
     cell_diameter: np.ndarray | None = None
     lattice: Lattice | None = None
+    resids: np.ndarray | None = None
+    resnames: np.ndarray | None = None
+    names: np.ndarray | None = None
+    box: tuple[float, float, float] | None = None
+    reader_options: dict[str, Any] | None = None
     source: str = 'in-memory'
     source_sha256: str | None = None
     format: str = 'arrays'
@@ -141,10 +155,16 @@ class Structure:
         set_(self, 'sld', _owned(sld))
         set_(self, 'volume', _owned(volume))
         set_(self, 'notes', tuple(self.notes))
-        if self.symbols is not None:
-            if len(self.symbols) != n:
-                raise StructureError('symbols must have one entry per point.')
-            set_(self, 'symbols', _owned(self.symbols, str))
+        for name, dtype in (('symbols', str), ('resids', int), ('resnames', str), ('names', str)):
+            values = getattr(self, name)
+            if values is not None:
+                if len(values) != n:
+                    raise StructureError(f'{name} must have one entry per point.')
+                set_(self, name, _owned(values, dtype))
+        if self.box is not None:
+            set_(self, 'box', tuple(float(length) for length in self.box))
+        if self.reader_options is not None:
+            set_(self, 'reader_options', copy.deepcopy(dict(self.reader_options)))
         if self.bonds is not None:
             bonds = np.asarray(self.bonds, dtype=int).reshape(-1, 2)
             if bonds.size and (bonds.min() < 0 or bonds.max() >= n):
@@ -180,6 +200,12 @@ class Structure:
     @property
     def bounding_box(self) -> tuple[np.ndarray, np.ndarray]:
         return self.xyz.min(axis=0), self.xyz.max(axis=0)
+
+    @property
+    def centre(self) -> np.ndarray:
+        """The middle of the bounding box, Å, as SasView's ``transform_center`` takes it."""
+        low, high = self.bounding_box
+        return (low + high) / 2
 
     @property
     def masses(self) -> np.ndarray:
@@ -238,6 +264,13 @@ class Structure:
             info['lattice_step'] = list(self.lattice.step)
         if self.cell_diameter is not None:
             info['max_cell_diameter'] = float(self.cell_diameter.max())
+        if self.resids is not None:
+            from .molecules import residue_runs
+
+            info['n_residues'] = int(residue_runs(self.resids)[0].size)
+            info['residue_atoms'] = dict(sorted(Counter(self.resnames.tolist()).items()))
+        if self.box is not None:
+            info['box'] = list(self.box)
         return info
 
     def _lines(self) -> list[tuple[str, str]]:
@@ -267,6 +300,11 @@ class Structure:
                 rows.append(('Sampling limit', f'q < pi/step = {np.pi / step:.4g} (SasView)'))
         if self.cell_diameter is not None:
             rows.append(('Max cell diameter', f'{info["max_cell_diameter"]:.4g} {ANGSTROM}'))
+        if 'n_residues' in info:
+            atoms = ', '.join(f'{name} x{count}' for name, count in info['residue_atoms'].items())
+            rows.append(('Residues', f'{info["n_residues"]}; atoms per name: {atoms}'))
+        if self.box is not None:
+            rows.append(('Box', f'{np.round(self.box, 3).tolist()} {ANGSTROM}'))
         rows.extend(('Note', note) for note in self.notes)
         return rows
 

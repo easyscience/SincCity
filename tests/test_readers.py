@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from support import C60, CUBE_VTK, quiet_calculator
 
-from sinccity import StructureError, read_pdb, read_sld, read_vtk
+from sinccity import StructureError, load, read_gro, read_pdb, read_sld, read_vtk
 from sinccity.readers import cell_geometry
 
 # ============================================================================
@@ -16,7 +16,7 @@ from sinccity.readers import cell_geometry
 
 def pdb_line(serial, name, residue, x, element, record='ATOM', altloc=' ', occupancy=1.0, resseq=1):
     return (
-        f'{record:<6}{serial:>5} {name:<4}{altloc}{residue:>3} A{resseq:>4}    '
+        f'{record:<6}{serial:>5} {name:<4}{altloc}{residue:<4}A{resseq:>4}    '
         f'{x:8.3f}{0.0:8.3f}{0.0:8.3f}{occupancy:6.2f}{0.0:6.2f}          {element:>2}'
     )
 
@@ -71,6 +71,112 @@ class TestPdb:
     def test_missing_file(self):
         with pytest.raises(StructureError, match='not found'):
             read_pdb('missing.pdb')
+
+    def test_residue_data_four_letter_names_and_md_waters(self, tmp_path):
+        lines = [
+            pdb_line(1, 'N1', 'CTAB', 0.0, 'N', resseq=1),
+            pdb_line(2, 'C1', 'CTAB', 1.0, 'C', resseq=1),
+            pdb_line(3, 'BR', 'BR', 5.0, 'BR', record='HETATM', resseq=2),
+            pdb_line(4, 'OW', 'SOL', 4.0, 'O', resseq=3),
+            pdb_line(5, 'OH2', 'TIP3', 6.0, 'O', resseq=4),
+        ]
+        path = tmp_path / 'md.pdb'
+        path.write_text('\n'.join(lines) + '\n')
+        s = read_pdb(path)
+        assert s.resnames.tolist() == ['CTAB', 'CTAB'] and s.resids.tolist() == [1, 1]
+        assert s.names.tolist() == ['N1', 'C1']
+        assert 'Skipped 2 water atoms.' in s.notes and 'BR x1' in ' '.join(s.notes)
+        assert s.reader_options == {'include_hetatm': False, 'residues': None}
+
+        selected = read_pdb(path, residues=['BR', 'SOL'])  # the whole selection
+        assert selected.resnames.tolist() == ['BR', 'SOL'] and selected.notes == ()
+        assert selected.reader_options['residues'] == ['BR', 'SOL']
+        assert read_pdb(path, residues='CTAB').n_points == 2
+        with pytest.raises(StructureError, match='no atom of the residues CTA'):
+            read_pdb(path, residues=['CTA'])
+
+    def test_cryst1_box(self, tmp_path):
+        atom = pdb_line(1, 'C', 'ALA', 0.0, 'C')
+        for cryst, box in (
+            (
+                'CRYST1   40.000   50.000   60.000  90.00  90.00  90.00 P 1           1',
+                (40, 50, 60),
+            ),
+            ('CRYST1    1.000    1.000    1.000  90.00  90.00  90.00 P 1           1', None),
+            ('CRYST1   40.000   40.000   40.000  60.00  60.00  90.00 P 1           1', None),
+        ):
+            path = tmp_path / 'box.pdb'
+            path.write_text(f'{cryst}\n{atom}\n')
+            assert read_pdb(path).box == box
+        assert 'triclinic' in ' '.join(read_pdb(path).notes)
+
+
+# ============================================================================
+# GRO
+# ============================================================================
+
+
+def gro_text(atoms, box='   5.00000   6.00000   7.00000', ndec=3):
+    """A .gro file; atoms are (resid, resname, name, x, y, z) in nm."""
+    width = ndec + 5
+    lines = ['written by a test', f'{len(atoms):5d}']
+    for number, (resid, resname, name, *xyz) in enumerate(atoms, start=1):
+        position = ''.join(f'{v:{width}.{ndec}f}' for v in xyz)
+        lines.append(f'{resid % 100000:>5d}{resname:<5}{name:>5}{number % 100000:>5d}{position}')
+    return '\n'.join([*lines, box]) + '\n'
+
+
+class TestGro:
+    ATOMS = [
+        (1, 'CTA', 'N1', 0.1, 0.2, 0.3),
+        (1, 'CTA', 'C21', 0.2, 0.2, 0.3),
+        (1, 'CTA', 'CA', 0.3, 0.2, 0.3),
+        (2, 'CL', 'CL', 0.5, 0.5, 0.5),
+        (3, 'SOL', 'OW', 1.0, 1.0, 1.0),
+    ]
+
+    def test_columns_units_box_and_guesses(self, tmp_path):
+        path = tmp_path / 'a.gro'
+        path.write_text(gro_text(self.ATOMS))
+        s = read_gro(path)
+        assert (s.format, s.n_points, s.box) == ('gro', 5, (50.0, 60.0, 70.0))
+        assert np.allclose(s.xyz[0], [1.0, 2.0, 3.0])
+        assert s.symbols.tolist() == ['N', 'C', 'C', 'Cl', 'O']  # CA in CTA is carbon
+        assert s.resids.tolist() == [1, 1, 1, 2, 3]
+        assert 'pass residues=' in ' '.join(s.notes)
+        assert s.reader_options == {'residues': None}
+        selected = read_gro(path, residues=['CTA'])
+        assert selected.n_points == 3 and selected.notes == ()
+        with pytest.raises(StructureError, match='no atom of the residues NA'):
+            read_gro(path, residues=['NA'])
+
+    def test_ndec_widths_and_touching_fields(self, tmp_path):
+        atoms = [(12345, 'TIP3P', 'HW123', 1.23456789, -0.5, 2.0), (12345, 'TIP3P', 'OW', 0, 0, 0)]
+        path = tmp_path / 'wide.gro'
+        path.write_text(gro_text(atoms, ndec=6))
+        s = read_gro(path)
+        assert s.resnames.tolist() == ['TIP3P', 'TIP3P'] and s.names.tolist() == ['HW123', 'OW']
+        assert s.resids.tolist() == [12345, 12345]
+        assert np.allclose(s.xyz[0], [12.34568, -5.0, 20.0])
+
+    def test_triclinic_box_and_bad_files(self, tmp_path):
+        path = tmp_path / 'tri.gro'
+        triclinic = '   5.0   5.0   5.0   0.0   0.0   2.5   0.0   0.0   0.0'
+        path.write_text(gro_text(self.ATOMS[:3], box=triclinic))
+        s = read_gro(path)
+        assert s.box is None and 'triclinic' in ' '.join(s.notes)
+        path.write_text('title\n  3\n')
+        with pytest.raises(StructureError, match='not a readable .gro file'):
+            read_gro(path)
+
+
+def test_load_notes_options_a_format_does_not_have(tmp_path):
+    path = tmp_path / 'a.gro'
+    path.write_text(gro_text(TestGro.ATOMS))
+    s = load(path, include_hetatm=True, residues=['CTA'])
+    assert s.n_points == 3 and any('Ignored include_hetatm' in note for note in s.notes)
+    vtk = load(CUBE_VTK, residues=['CTA'])
+    assert vtk.reader_options == {} and any('Ignored residues' in note for note in vtk.notes)
 
 
 # ============================================================================
