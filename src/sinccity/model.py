@@ -8,9 +8,6 @@ import numpy as np
 
 from ._console import ANGSTROM, CUBIC_ANGSTROM, SLD_UNIT
 
-#: Avogadro constant, 1/mol (the value SasView uses).
-AVOGADRO = 6.02214129e23
-
 #: Partial specific volume of a typical protein, cm³/g.
 PROTEIN_SPECIFIC_VOLUME = 0.73
 
@@ -189,9 +186,9 @@ class Structure:
         """Atomic masses in g/mol (atoms only)."""
         if self.symbols is None:
             raise StructureError('Masses are only defined for atomic structures.')
-        from .elements import constants
+        from periodictable import elements
 
-        return np.array([constants(s)[2] for s in self.symbols])
+        return np.array([elements.symbol(s).mass for s in self.symbols])
 
     def radius_of_gyration(self, weights: str = 'sld', *, sld_solvent: float = 0.0) -> RgResult:
         """Radius of gyration, as a diagnostic that never raises.

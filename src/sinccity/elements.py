@@ -4,7 +4,10 @@ from functools import cache
 
 import numpy as np
 
-from .model import AVOGADRO, StructureError
+from .model import StructureError
+
+#: Avogadro constant, 1/mol (the value SasView uses).
+AVOGADRO = 6.02214129e23
 
 
 @cache
@@ -21,8 +24,10 @@ def constants(symbol: str) -> tuple[float, float, float]:
 
     try:
         atom = formula(symbol)
-        sld = nsf.neutron_sld(symbol)[0] * 1e-6
+        # The volume first: without a density it raises a TypeError, while
+        # neutron_sld fails an assert.
         volume = 1e24 * atom.mass / atom.density / AVOGADRO
+        sld = nsf.neutron_sld(symbol)[0] * 1e-6
     except (ValueError, TypeError, AttributeError) as exc:
         raise StructureError(f'No neutron SLD or density for element {symbol!r}.') from exc
     if not (np.isfinite(sld) and np.isfinite(volume) and volume > 0):

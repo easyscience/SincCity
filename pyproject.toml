@@ -32,9 +32,6 @@ dev = [
 [tool.setuptools.packages.find]
 where = ["src"]
 
-# Linting and formatting follow the repository-wide ruff configuration in the
-# top-level pyproject.toml; there is deliberately no [tool.ruff] section here.
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = ["-ra", "--strict-markers"]

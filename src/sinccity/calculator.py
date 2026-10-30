@@ -13,7 +13,8 @@ import numpy as np
 from . import __version__
 from ._console import ANGSTROM, CUBIC_ANGSTROM, INVERSE_ANGSTROM, OK, SLD_UNIT, logger
 from .debye import LATTICE_MAX_CELLS, debye_lattice, debye_pairs, lattice_cells
-from .model import AVOGADRO, PROTEIN_SPECIFIC_VOLUME, Structure
+from .elements import AVOGADRO
+from .model import PROTEIN_SPECIFIC_VOLUME, Structure
 from .readers import load
 
 #: SasView's default 1D grid: 30 log-spaced points up to 0.3 1/Å.
@@ -136,7 +137,7 @@ class ScatteringProfile:
         engines such as IQuana's expect. Fitting it then needs an explicit
         weighting and no resolution smearing.
 
-        sasdata is an optional dependency (``pip install sinccity[sasdata]``).
+        sasdata is an optional dependency (``pip install "sinccity[sasdata]"``).
 
         Args:
             dI: Optional uncertainties: finite, non-negative, one per q.
@@ -144,7 +145,7 @@ class ScatteringProfile:
         try:
             from sasdata.dataloader.data_info import Data1D, Process
         except ImportError as exc:
-            raise ImportError('to_data1d needs sasdata: pip install sinccity[sasdata]') from exc
+            raise ImportError('to_data1d needs sasdata: pip install "sinccity[sasdata]"') from exc
         dy = None
         if dI is not None:
             dy = np.array(dI, dtype=float, copy=True)

@@ -1,6 +1,6 @@
 """Plotly views of a structure (SasView's *Draw Points*) and of a computed profile.
 
-plotly is an optional dependency (``pip install sinccity[plot]``); this module
+plotly is an optional dependency (``pip install "sinccity[plot]"``); this module
 is imported only when a plot is drawn.
 """
 
@@ -13,7 +13,7 @@ try:
     import plotly.graph_objects as go
     from plotly.colors import qualitative
 except ImportError as exc:
-    raise ImportError('Plots need plotly: pip install sinccity[plot]') from exc
+    raise ImportError('Plots need plotly: pip install "sinccity[plot]"') from exc
 
 #: SasView's Draw Points colours; other elements cycle through a qualitative palette.
 ELEMENT_COLOURS = {
