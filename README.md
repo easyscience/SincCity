@@ -3,9 +3,9 @@
 The orientationally averaged I(q) of a real-space structure, by the exact
 Debye formula: atoms from a **PDB** or GROMACS **GRO** file, pixels from a
 SasView **SLD** file, or the cells of a legacy ASCII **VTK** mesh. It is the
-nuclear, 1D part of
-SasView's *Generic Scattering Calculator*, as a plain Python package for
-scripts and notebooks. There are no 2D, magnetic or polarisation options.
+nuclear, 1D part of SasView's *Generic Scattering Calculator*, as a plain
+Python package for scripts and notebooks. There are no 2D, magnetic or
+polarisation options.
 
 `sinccity` is developed alongside [IQuana](https://github.com/ai4se1dk/IQuana)
 but does not depend on it. The two meet through `profile.to_data1d()`, which
@@ -70,7 +70,7 @@ Positions are in Å and SLDs in Å⁻² in all four (a `.gro` file's nm are conv
 
 | Format | What is read |
 |---|---|
-| PDB | `ATOM` records of the first model. `include_hetatm=True` adds `HETATM` records, never waters (`HOH`, `DOD`, `WAT` and the MD names `SOL`, `TIP3`, `TIP3P`, `TIP4P`, `SPC`, `SPCE`, `OPC`). One alternate-location ID for the whole structure, occupancy not applied. Residue names from columns 18–21, where MD programs write four-letter names. Elements from columns 77–78 (any case), else from the atom name. Each element gets SasView's SLD and *natural atomic volume* from periodictable; an unknown element is an error. `CONECT` bonds are drawn. A `CRYST1` box is stored unless it is the 1 Å placeholder. |
+| PDB | `ATOM` records of the first model. `include_hetatm=True` adds `HETATM` records, never waters (`HOH`, `DOD`, `WAT` and the MD names `SOL`, `TIP3`, `TIP4`, `SPC`, `SPCE`, `OPC`). One alternate-location ID for the whole structure, occupancy not applied. Residue names from columns 18–21, where MD programs write four-letter names. Elements from columns 77–78 (any case), else from the atom name. Each element gets SasView's SLD and *natural atomic volume* from periodictable; an unknown element is an error. `CONECT` bonds are drawn. A `CRYST1` box is stored unless it is unreadable or a placeholder (a side of 1 Å or less). Residue numbers that are not decimal integers (hybrid-36) are renumbered in order. |
 | GRO | All atoms, cut at GROMACS's fixed columns (names may touch numbers; `-ndec` files are read). Velocities are ignored; the box comes from the last line. Elements are guessed from the atom names: leading digits dropped, then the first letter, except that a one-atom residue whose name is a two-letter element (`NA`, `CL`) is that element. So `CA` in a protein is carbon and a `CA` ion calcium. |
 | SLD | One header line, then `x y z sld`, `x y z sld mx my mz` or `x y z sld mx my mz volume`. Magnetic columns are ignored; six-column magnetic-only files are refused. Without a volume column the points must form a lattice and each pixel's volume is the product of the steps. A sparse subset that skips planes looks like a coarser lattice, so give such files the volume column. |
 | VTK | Legacy ASCII `UNSTRUCTURED_GRID` (classic or 5.1 layout) with tetrahedra, voxels, hexahedra, wedges and pyramids. The nuclear SLD is the one single-component `SCALARS` field, per cell or per point (averaged to cells as SasView does). Each cell becomes one point at its volume centroid. Binary files are refused with an export recipe. |

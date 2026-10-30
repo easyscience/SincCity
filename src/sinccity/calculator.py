@@ -1,5 +1,6 @@
 """The Generic Scattering Calculator: I(q) of a real-space structure."""
 
+import copy
 import html
 import os
 import time
@@ -430,7 +431,7 @@ class GenericScatteringCalculator:
             'format': structure.format,
             'kind': structure.kind,
             'n_points': structure.n_points,
-            'reader_options': structure.reader_options,
+            'reader_options': copy.deepcopy(structure.reader_options),
             'notes': list(structure.notes),
         }
         profile = ScatteringProfile(
@@ -566,8 +567,8 @@ class GenericScatteringCalculator:
             'source': structure.source if replayable else 'in-memory',
             'basename': os.path.basename(structure.source),
             'source_sha256': structure.source_sha256,
-            'reader_options': structure.reader_options,
-            'q': self._q.tolist(),
+            'reader_options': copy.deepcopy(structure.reader_options),
+            'q':self._q.tolist(),
             'q_grid': dict(self._q_args) if self._q_args else None,
             'params': dict(self._params),
             'versions': {

@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 
 from ._console import ANGSTROM, CUBIC_ANGSTROM, SLD_UNIT
+from .molecules import residue_runs
 
 #: Partial specific volume of a typical protein, cm³/g.
 PROTEIN_SPECIFIC_VOLUME = 0.73
@@ -155,6 +156,9 @@ class Structure:
         set_(self, 'sld', _owned(sld))
         set_(self, 'volume', _owned(volume))
         set_(self, 'notes', tuple(self.notes))
+        residue_data = [getattr(self, name) is not None for name in ('resids', 'resnames', 'names')]
+        if any(residue_data) and not (all(residue_data) and self.kind == 'atoms'):
+            raise StructureError('resids, resnames and names come together, and only for atoms.')
         for name, dtype in (('symbols', str), ('resids', int), ('resnames', str), ('names', str)):
             values = getattr(self, name)
             if values is not None:
@@ -265,8 +269,6 @@ class Structure:
         if self.cell_diameter is not None:
             info['max_cell_diameter'] = float(self.cell_diameter.max())
         if self.resids is not None:
-            from .molecules import residue_runs
-
             info['n_residues'] = int(residue_runs(self.resids)[0].size)
             info['residue_atoms'] = dict(sorted(Counter(self.resnames.tolist()).items()))
         if self.box is not None:

@@ -57,7 +57,7 @@ def sld_volume(symbols) -> tuple[np.ndarray, np.ndarray]:
         except StructureError:
             unknown.append(symbol)
     if unknown:
-        raise StructureError(f'No neutron SLD or density for element(s) {", ".join(unknown)}.')
+        raise StructureError(f'no neutron SLD or density for element(s) {", ".join(unknown)}.')
     table = np.array(table).reshape(-1, 2)
     return table[index, 0], table[index, 1]
 
@@ -79,8 +79,13 @@ def guess_stem(name: str, single_atom: bool) -> str:
     ``NA``) is that element only in a residue of one atom, an ion; otherwise
     the element is the first letter, so ``CA`` in a protein is carbon. The
     result may be no element; the caller checks.
+
+    Raises:
+        StructureError: If the name has no letter after the leading digits.
     """
     stem = name.lstrip(string.digits)
+    if not stem[:1].isalpha():
+        raise StructureError(f'cannot guess an element from the atom name {name!r}.')
     if single_atom and len(stem) == 2 and stem.capitalize() in MASS_TABLE:
         return stem.capitalize()
     return stem[:1].upper()

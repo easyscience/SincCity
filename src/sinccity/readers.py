@@ -22,7 +22,7 @@ from .model import Structure, StructureError, detect_lattice
 from .molecules import residue_runs
 
 #: Residue names of water, which the PDB reader drops unless ``residues`` is given.
-WATER_RESIDUES = ('HOH', 'DOD', 'WAT', 'SOL', 'TIP3', 'TIP3P', 'TIP4P', 'SPC', 'SPCE', 'OPC')
+WATER_RESIDUES = ('HOH', 'DOD', 'WAT', 'SOL', 'TIP3', 'TIP4', 'SPC', 'SPCE', 'OPC')
 
 
 def _hash_file(path: str) -> str | None:
@@ -118,8 +118,10 @@ def read_pdb(path, *, include_hetatm: bool = False, residues=None) -> Structure:
     structure (blank plus the first non-blank ID seen); occupancy not applied;
     waters never read; elements from columns 77-78, else from the atom name.
     Residue names are read from columns 18-21, where MD programs write
-    four-letter names. The ``CRYST1`` box is stored unless it is the 1 Å
-    placeholder. Each policy that drops or ignores something adds a note.
+    four-letter names; a residue number that is not a decimal integer (hybrid-36
+    past 9999) starts a new residue whenever it changes. The ``CRYST1`` box is
+    stored unless it is unreadable or a placeholder (a side of 1 Å or less).
+    Each policy that drops or ignores something adds a note.
 
     Args:
         path: The PDB file.
@@ -135,9 +137,9 @@ def read_pdb(path, *, include_hetatm: bool = False, residues=None) -> Structure:
     xyz, symbols, serials, conect = [], [], [], []
     resids, resnames, names = [], [], []
     dropped_het: Counter = Counter()
-    dropped_water = dropped_altloc = models = 0
+    dropped_water = dropped_altloc = models = renumbered = 0
     partial_occupancy = False
-    altloc_kept = cryst = None
+    altloc_kept = cryst = resseq_before = None
     for number, line in enumerate(lines, start=1):
         record = line[:6]
         if record == 'MODEL ':
@@ -174,9 +176,15 @@ def read_pdb(path, *, include_hetatm: bool = False, residues=None) -> Structure:
             symbol = line[76:78].strip() or guess_pdb(line)
             occupancy = line[54:60].strip()
             partial_occupancy |= bool(occupancy) and float(occupancy) < 1.0
-            resid = int(line[22:26].strip() or 0)
         except (ValueError, IndexError) as exc:
             raise StructureError(f'{path}, line {number}: cannot read the atom record.') from exc
+        resseq = line[22:26].strip()
+        try:
+            resid = int(resseq or 0)
+        except ValueError:  # hybrid-36 or another non-decimal number: number by change
+            resid = resids[-1] + (resseq != resseq_before) if resids else 0
+            renumbered += 1
+        resseq_before = resseq
         xyz.append(position)
         symbols.append(symbol[0].upper() + symbol[1:].lower())
         resids.append(resid)
@@ -214,16 +222,24 @@ def read_pdb(path, *, include_hetatm: bool = False, residues=None) -> Structure:
         notes.append(f'Kept alternate location {altloc_kept!r}; skipped {dropped_altloc} atoms.')
     if partial_occupancy:
         notes.append('Some atoms have occupancy below 1; occupancy is not applied.')
+    if renumbered:
+        notes.append(
+            f'{renumbered} atoms have a residue number that is not a decimal integer; '
+            'their residues are numbered in order of appearance.'
+        )
 
     box = None
     if cryst is not None:
         try:
             lengths = [float(cryst[i : i + 9]) for i in (6, 15, 24)]
             angles = [float(cryst[i : i + 7]) for i in (33, 40, 47)]
-        except ValueError as exc:
-            raise StructureError(f'{path}: cannot read the CRYST1 record.') from exc
-        if lengths != [1.0, 1.0, 1.0]:  # many programs write a 1 Ang placeholder
-            box = _box(lengths, angles != [90.0, 90.0, 90.0], notes)
+        except ValueError:
+            notes.append('Cannot read the CRYST1 record; no box is stored.')
+        else:
+            if min(lengths) > 1.0:  # many programs write a 1 Ang or zero placeholder
+                box = _box(lengths, angles != [90.0, 90.0, 90.0], notes)
+            else:
+                notes.append(f'The CRYST1 box {lengths} is a placeholder; it is not stored.')
 
     return _atoms(
         path,
@@ -298,7 +314,10 @@ def read_gro(path, *, residues=None) -> Structure:
     box = _box(box[:3], any(box[3:]), notes)
     _, sizes = residue_runs(resids)
     single = np.repeat(sizes == 1, sizes)
-    symbols = [guess_stem(name, one) for name, one in zip(names.tolist(), single)]
+    try:
+        symbols = [guess_stem(name, one) for name, one in zip(names.tolist(), single)]
+    except StructureError as exc:
+        raise StructureError(f'{path}: {exc}') from exc
     return _atoms(
         path,
         sha,
