@@ -21,12 +21,13 @@ __version__ = '0.1.0'
 
 from ._console import set_verbosity
 from .calculator import GenericScatteringCalculator, ScatteringProfile
-from .debye import CalculationInterrupted
+from .debye import CalculationInterrupted, DistanceSpectrum
 from .model import RgResult, Structure, StructureError
 from .readers import load, read_gro, read_pdb, read_sld, read_vtk
 
 __all__ = [
     'CalculationInterrupted',
+    'DistanceSpectrum',
     'GenericScatteringCalculator',
     'RgResult',
     'ScatteringProfile',

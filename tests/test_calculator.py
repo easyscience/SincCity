@@ -130,6 +130,88 @@ class TestNormalisation:
 
 
 # ============================================================================
+# Kernels and the spectrum cache
+# ============================================================================
+
+
+def counting(calls):
+    """A progress callback that counts its calls."""
+
+    def progress(fraction):
+        calls.append(fraction)
+
+    return progress
+
+
+class TestKernels:
+    def test_atoms_default_to_the_histogram(self):
+        calc = quiet_calculator(C60)
+        histogram = calc.calculate()
+        assert histogram.method == 'histogram'
+        assert histogram.histogram_bin == pytest.approx(1e-3 / 0.3)
+        assert 'histogram (bin 0.00333 Ang)' in histogram._process_text()
+        calc.set_params(kernel='pairs')
+        pairs = calc.calculate()
+        assert pairs.method == 'pairs' and pairs.histogram_bin is None
+        assert np.allclose(histogram.intensity, pairs.intensity, rtol=1e-4)
+
+    def test_bin_follows_q_max_and_can_be_set(self):
+        calc = quiet_calculator(C60)
+        calc.set_q_grid(qmax=0.05)
+        assert calc.calculate().histogram_bin == 0.01  # never coarser than 0.01 Ang
+        calc.set_q_grid(qmax=3.0)
+        assert calc.calculate().histogram_bin == pytest.approx(1e-3 / 3.0)
+        explicit = quiet_calculator(C60)
+        explicit.set_params(histogram_bin=0.02)
+        assert explicit.calculate().histogram_bin == 0.02
+
+    def test_kernel_choices_and_refusals(self):
+        calc = quiet_calculator(C60)
+        calc.set_params(kernel='lattice')
+        with pytest.raises(ValueError, match="kernel='lattice' needs points on a lattice"):
+            calc.calculate()
+        with pytest.raises(ValueError, match='kernel must be one of'):
+            calc.set_params(kernel='fast')
+        with pytest.raises(ValueError, match='histogram_bin'):
+            calc.set_params(histogram_bin=0.0)
+        pixels = quiet_calculator(sphere_pixels(radius=6.0))
+        assert pixels.calculate().method == 'lattice'
+        pixels.set_params(kernel='histogram')
+        assert pixels.calculate().method == 'histogram'
+
+    def test_the_spectrum_is_reused_across_solvents(self):
+        calls = []
+        calc = quiet_calculator(C60)
+        calc.calculate(progress=counting(calls))
+        assert calls
+        calls.clear()
+        calc.set_params(sld_solvent=6.34, scale=2.0, background=0.1)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            reused = calc.calculate(progress=counting(calls))
+            assert calls == []  # no pair pass
+            fresh = quiet_calculator(C60)
+            fresh.set_params(sld_solvent=6.34, scale=2.0, background=0.1)
+            assert np.allclose(reused.intensity, fresh.calculate().intensity, rtol=1e-12)
+
+    def test_a_finer_cached_bin_is_reused(self):
+        calls = []
+        calc = quiet_calculator(C60)
+        calc.set_params(histogram_bin=0.001)
+        calc.calculate()
+        calc.set_params(histogram_bin=0.002)
+        profile = calc.calculate(progress=counting(calls))
+        assert calls == [] and profile.histogram_bin == 0.001
+        calc.set_params(histogram_bin=0.0005)
+        calc.calculate(progress=counting(calls))
+        assert calls  # a finer bin needs a new pass
+        calc.set_params(deuterated=[], kernel='histogram')
+        calls.clear()
+        calc.calculate(progress=counting(calls))
+        assert calls == []  # 'auto' and 'histogram' resolve to the same kernel
+
+
+# ============================================================================
 # Calculator state and output
 # ============================================================================
 
@@ -244,6 +326,25 @@ class TestCalculator:
             GenericScatteringCalculator.from_settings(settings)
         profile.save_csv(tmp_path / 'profile.csv')
         assert np.loadtxt(tmp_path / 'profile.csv', delimiter=',').shape == (20, 2)
+
+    def test_settings_without_a_kernel_replay_the_kernel_of_0_1_0(self, tmp_path):
+        calc = quiet_calculator(C60)
+        calc.set_params(kernel='pairs')
+        recorded = calc.calculate().intensity
+        settings = calc.get_settings()
+        for key in ('kernel', 'histogram_bin', 'deuterated'):  # 0.1.0 had none of them
+            del settings['params'][key]
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')  # the guessed elements of c60.pdb
+            replay = GenericScatteringCalculator.from_settings(settings).calculate()
+        assert replay.method == 'pairs' and np.array_equal(replay.intensity, recorded)
+
+        path = tmp_path / 'pixels.sld'
+        corners = [f'{x} {y} {z} 1e-6' for x in (0, 2) for y in (0, 2) for z in (0, 2)]
+        path.write_text('\n'.join(['x y z sld', *corners]) + '\n')
+        pixels = quiet_calculator(sinccity.load(path)).get_settings()
+        del pixels['params']['kernel']
+        assert GenericScatteringCalculator.from_settings(pixels).get_params()['kernel'] == 'auto'
 
     def test_settings_replay_deuteration(self, tmp_path):
         path = tmp_path / 'cta.pdb'

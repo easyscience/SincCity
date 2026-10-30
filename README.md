@@ -1,7 +1,7 @@
 # SincCity — Generic Scattering Calculator
 
-The orientationally averaged I(q) of a real-space structure, by the exact
-Debye formula: atoms from a **PDB** or GROMACS **GRO** file, pixels from a
+The orientationally averaged I(q) of a real-space structure, by the Debye
+formula: atoms from a **PDB** or GROMACS **GRO** file, pixels from a
 SasView **SLD** file, or the cells of a legacy ASCII **VTK** mesh. It is the
 nuclear, 1D part of SasView's *Generic Scattering Calculator*, as a plain
 Python package for scripts and notebooks. There are no 2D, magnetic or
@@ -41,7 +41,7 @@ gsc.plot_profile()  # or gsc.plot_profile(data=some_data1d)
 data = profile.to_data1d()  # a sasdata Data1D, ready for a fit
 ```
 
-The calculation is the exact Debye sum over all points:
+The calculation is the Debye sum over all points:
 
 ```text
 w_j  = (sld_j - sld_solvent * 1e-6) * volume_j        SLD in Å^-2, volume in Å^3
@@ -145,11 +145,29 @@ coords2sans.
   which degrades as q × cell size approaches 1. `calculate()` warns above
   that, with the cell size taken as the lattice step or the cell diameter
   divided by √3.
-- **Speed.** Pixels on a lattice use an FFT autocorrelation, which gives the
-  same sum exactly and takes well under a second for 10⁵ pixels. Atoms and
-  cells use the pair sum, which scales as N²: about 0.1 s for 1 000 points,
-  2–3 s for 4 000 and 25 s for 8 000. `calculate(progress=...)` can report
-  progress or stop a long run.
+- **Kernels.** `set_params(kernel=...)` picks how D(q) is summed; the
+  profile's `method` records it.
+
+  | `kernel` | How | Exact? | Time |
+  |---|---|---|---|
+  | `'lattice'` | FFT autocorrelation of the pixel grid | yes | well under a second for 10⁵ pixels |
+  | `'histogram'` | pairs counted by distance, then one sum per q over the occupied distances | to about 1e-4 | about 2 s for 11 000 atoms, N² |
+  | `'average'` | ⟨A⟩²: each point's distance from the bounding-box centre | only for spherically symmetric structures | linear in N |
+  | `'pairs'` | every pair at every q | to the last digit | 2–3 s for 4 000 points, 25 s for 8 000 |
+
+  `'auto'` (the default) is `'lattice'` for pixels on a lattice and
+  `'histogram'` for everything else. The histogram bin is `'auto'`:
+  `min(0.01 Å, 1e-3 / q_max)`, which keeps the rounding phase error below
+  5e-4 rad; `histogram_bin=` sets it, and `profile.histogram_bin` records it.
+  `'average'` reproduces SasView's `is_avg=True` and suits round aggregates
+  above about 10⁵ atoms. `calculate(progress=...)` can report progress or
+  stop the pair passes of `'histogram'` and `'pairs'`.
+- **Contrast series are cheap.** The lattice, histogram and average kernels
+  keep the scattering lengths and the volumes apart in their distance
+  spectrum, so the calculator keeps the last one and a new `sld_solvent`,
+  `scale`, `background` or `normalisation_volume` costs only the sums over
+  q. A new structure, deuteration, kernel, a finer bin or a change of which
+  points match the solvent repeats the pair pass.
 - **The curve is theory.** `profile.to_data1d()` returns a `Data1D` with no
   dI and no dQ, with `qmin`, `qmax` and an empty `mask` set. A fit of it
   should state its weighting and resolution explicitly; pass
