@@ -361,6 +361,11 @@ class TestSeries:
             micelle.calculate_series([{'lable': 'typo'}])
         with pytest.raises(ValueError, match='Series entry 0 .*size_pd must be'):
             micelle.calculate_series([{'params': {'size_pd': -1}}])
+        with pytest.raises(ValueError, match=r"Series entry 1 \('d'\): Deuterated .* not in"):
+            micelle.calculate_series([SERIES[0], {'label': 'd', 'params': {'deuterated': ['SDS']}}])
+        for bad in (None, ['sld_solvent', 1.0], {'params': [('sld_solvent', 1.0)]}):
+            with pytest.raises(ValueError, match='Series entry 0 .*a dict'):
+                micelle.calculate_series([bad])
         assert passes == []
 
     def test_an_interrupted_series_changes_nothing(self, micelle):

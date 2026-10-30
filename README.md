@@ -211,7 +211,10 @@ coords2sans.
   SHA-256, the reader options, the q grid, every parameter and the package
   versions. `GenericScatteringCalculator.from_settings(settings)` rebuilds
   the calculator and warns if the file or the periodictable version changed;
-  records of version 0.1 replay with the new parameters at their defaults.
+  records of version 0.1 replay with the new parameters at their defaults,
+  except the kernel: `'auto'` for pixels on a lattice and otherwise
+  `'pairs'`, the pair sum 0.1 used, so a record gives the curve it was
+  made with.
   A structure no file and options can rebuild (`from_arrays`, `from_atoms`,
   or a `deuterated` / `with_symbols` copy) is recorded as `'in-memory'`, which
   `from_settings` refuses; a derived copy also records `derived_from`.

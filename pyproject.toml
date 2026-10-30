@@ -27,10 +27,17 @@ sasdata = [
 dev = [
     "sinccity[plot,sasdata]",
     "pytest>=7.0",
+    "ruff>=0.14",
 ]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.format]
+quote-style = "single"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

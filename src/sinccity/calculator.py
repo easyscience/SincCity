@@ -568,18 +568,29 @@ class GenericScatteringCalculator:
                 leaves the parameters and ``profile`` as they were.
 
         Raises:
-            ValueError: Naming the entry whose key or value is not allowed.
+            ValueError: Naming the entry that is not a dict, or whose key or
+                value is not allowed, including deuterated residue names
+                the structure lacks.
         """
+        structure = self._require_structure()
         entries = []
         for number, entry in enumerate(series):
+            label = entry.get('label') if isinstance(entry, dict) else None
             try:
+                if not isinstance(entry, dict):
+                    raise ValueError('an entry is a dict of label and params.')
                 unknown = sorted(set(entry) - {'label', 'params'})
                 if unknown:
                     raise ValueError(f'unknown keys {", ".join(unknown)}; use label and params.')
-                params = _checked_params(self._params, entry.get('params', {}))
+                changes = entry.get('params', {})
+                if not isinstance(changes, dict):
+                    raise ValueError('params is a dict of set_params keys.')
+                params = _checked_params(self._params, changes)
+                if params['deuterated']:
+                    structure.deuterated(params['deuterated'])  # names not in the structure
             except (ValueError, TypeError) as exc:
-                raise ValueError(f'Series entry {number} ({entry.get("label")!r}): {exc}') from exc
-            entries.append((entry.get('label'), params))
+                raise ValueError(f'Series entry {number} ({label!r}): {exc}') from exc
+            entries.append((label, params))
 
         def group(index: int) -> tuple:
             p = entries[index][1]
@@ -887,7 +898,7 @@ class GenericScatteringCalculator:
             'basename': os.path.basename(structure.source),
             'source_sha256': structure.source_sha256,
             'reader_options': copy.deepcopy(structure.reader_options),
-            'q':self._q.tolist(),
+            'q': self._q.tolist(),
             'q_grid': dict(self._q_args) if self._q_args else None,
             'params': dict(self._params),
             'versions': {
