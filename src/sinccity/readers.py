@@ -15,7 +15,8 @@ from collections import Counter
 
 import numpy as np
 
-from .model import AVOGADRO, Structure, StructureError, detect_lattice
+from .elements import constants, guess_pdb
+from .model import Structure, StructureError, detect_lattice
 
 WATER_RESIDUES = ('HOH', 'DOD', 'WAT')
 
@@ -63,28 +64,6 @@ def _source(path) -> tuple[str, str | None]:
 # ============================================================================
 
 
-def _element_from_name(line: str) -> str:
-    """SasView's guess of the element from the atom-name columns 13-16."""
-    name = line[12:16].strip()
-    if line[12].isdigit():
-        return name[1]
-    if len(name) == 4 or line[12] == ' ':
-        return name[0]
-    return name[:2]
-
-
-def _element_constants(symbol: str) -> tuple[float, float]:
-    """SLD (Å⁻²) and natural atomic volume (Å³) of an element, as SasView computes them."""
-    from periodictable import formula, nsf
-
-    atom = formula(symbol)
-    sld = nsf.neutron_sld(symbol)[0] * 1e-6
-    volume = 1e24 * atom.mass / atom.density / AVOGADRO
-    if not (np.isfinite(sld) and np.isfinite(volume) and volume > 0):
-        raise ValueError(symbol)
-    return sld, volume
-
-
 def read_pdb(path, *, include_hetatm: bool = False) -> Structure:
     """Read the atoms of a PDB file.
 
@@ -129,7 +108,7 @@ def read_pdb(path, *, include_hetatm: bool = False) -> Structure:
                 continue
         try:
             position = [float(line[30:38]), float(line[38:46]), float(line[46:54])]
-            symbol = line[76:78].strip() or _element_from_name(line)
+            symbol = line[76:78].strip() or guess_pdb(line)
             occupancy = line[54:60].strip()
             partial_occupancy |= bool(occupancy) and float(occupancy) < 1.0
         except (ValueError, IndexError) as exc:
@@ -142,18 +121,18 @@ def read_pdb(path, *, include_hetatm: bool = False) -> Structure:
     if not xyz:
         raise StructureError(f'{path} contains no atom records.')
 
-    constants, unknown = {}, []
+    known, unknown = {}, []
     for symbol in sorted(set(symbols)):
         try:
-            constants[symbol] = _element_constants(symbol)
-        except (ValueError, TypeError, AttributeError):
+            known[symbol] = constants(symbol)
+        except StructureError:
             unknown.append(symbol)
     if unknown:
         raise StructureError(
             f'{path}: no neutron SLD or density for element(s) {", ".join(unknown)}.'
         )
-    sld = np.array([constants[s][0] for s in symbols])
-    volume = np.array([constants[s][1] for s in symbols])
+    sld = np.array([known[s][0] for s in symbols])
+    volume = np.array([known[s][1] for s in symbols])
 
     index_of = {s: i for i, s in enumerate(serials) if s is not None}
     bonds = [

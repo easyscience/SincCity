@@ -3,6 +3,8 @@
 import copy
 import json
 import pickle
+import subprocess
+import sys
 import warnings
 
 import numpy as np
@@ -217,6 +219,12 @@ class TestCalculator:
         assert settings['source'] == 'in-memory'
         with pytest.raises(ValueError, match='set_structure'):
             GenericScatteringCalculator.from_settings(settings)
+
+    def test_optional_dependencies_are_imported_lazily(self):
+        code = (
+            "import sys, sinccity; sys.exit(any(m in sys.modules for m in ('plotly', 'sasdata')))"
+        )
+        assert subprocess.run([sys.executable, '-c', code]).returncode == 0
 
     def test_set_verbosity(self, capsys):
         calc = quiet_calculator(C60)

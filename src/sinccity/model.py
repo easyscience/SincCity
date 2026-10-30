@@ -8,9 +8,6 @@ import numpy as np
 
 from ._console import ANGSTROM, CUBIC_ANGSTROM, SLD_UNIT
 
-#: Avogadro constant, 1/mol (the value SasView uses).
-AVOGADRO = 6.02214129e23
-
 #: Partial specific volume of a typical protein, cm³/g.
 PROTEIN_SPECIFIC_VOLUME = 0.73
 
@@ -289,7 +286,7 @@ class Structure:
         return f'<Structure {self.kind}: {self.n_points} points from {self.source}>'
 
     def plot_points(self, **kwargs: Any):
-        """Draw the points in 3D; see :func:`gsc.plotting.plot_points`."""
+        """Draw the points in 3D; see :func:`sinccity.plotting.plot_points`."""
         from .plotting import plot_points
 
         return plot_points(self, **kwargs)

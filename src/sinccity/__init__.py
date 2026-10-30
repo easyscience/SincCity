@@ -4,7 +4,7 @@ A notebook equivalent of the nuclear, 1D part of SasView's Generic Scattering
 Calculator: load a PDB, SLD or VTK file, compute the orientationally averaged
 I(q) by the exact Debye formula, and show the points and the curve. The
 result converts to a sasdata ``Data1D``, which is how it reaches a fit (for
-example ``SANSFitter.set_data`` in sans-fitter).
+example ``IQuana.set_data``).
 
 Example:
     >>> from sinccity import GenericScatteringCalculator
@@ -14,7 +14,7 @@ Example:
     >>> gsc.set_params(sld_solvent=6.34)     # 10^-6 1/Ang^2, as in sasmodels
     >>> profile = gsc.calculate()
     >>> gsc.plot_profile()
-    >>> data = profile.to_data1d()          # a Data1D for SANSFitter.set_data
+    >>> data = profile.to_data1d()          # a Data1D for IQuana.set_data
 """
 
 __version__ = '0.1.0'

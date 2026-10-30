@@ -9,12 +9,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
-from sasdata.dataloader.data_info import Data1D, Process
 
 from . import __version__
 from ._console import ANGSTROM, CUBIC_ANGSTROM, INVERSE_ANGSTROM, OK, SLD_UNIT, logger
 from .debye import LATTICE_MAX_CELLS, debye_lattice, debye_pairs, lattice_cells
-from .model import AVOGADRO, PROTEIN_SPECIFIC_VOLUME, Structure
+from .elements import AVOGADRO
+from .model import PROTEIN_SPECIFIC_VOLUME, Structure
 from .readers import load
 
 #: SasView's default 1D grid: 30 log-spaced points up to 0.3 1/Å.
@@ -129,17 +129,23 @@ class ScatteringProfile:
             text += '; notes: ' + ' | '.join(self.notes)
         return text.encode('ascii', 'replace').decode('ascii')
 
-    def to_data1d(self, *, dI=None) -> Data1D:
+    def to_data1d(self, *, dI=None):
         """Return the curve as a fit-ready sasdata ``Data1D``.
 
         The curve is theory, so it carries no dQ and, unless *dI* is given, no
-        dI. It carries ``qmin``, ``qmax`` and an empty ``mask``, which SANSFitter's
-        fit engines expect. Fitting it then needs an explicit ``set_weighting``
-        (for example ``'abs'``) and ``set_resolution('none')``.
+        dI. It carries ``qmin``, ``qmax`` and an empty ``mask``, which fit
+        engines such as IQuana's expect. Fitting it then needs an explicit
+        weighting and no resolution smearing.
+
+        sasdata is an optional dependency (``pip install "sinccity[sasdata]"``).
 
         Args:
             dI: Optional uncertainties: finite, non-negative, one per q.
         """
+        try:
+            from sasdata.dataloader.data_info import Data1D, Process
+        except ImportError as exc:
+            raise ImportError('to_data1d needs sasdata: pip install "sinccity[sasdata]"') from exc
         dy = None
         if dI is not None:
             dy = np.array(dI, dtype=float, copy=True)
@@ -195,7 +201,7 @@ class ScatteringProfile:
         return f'<table>{cells}</table>'
 
     def plot(self, *, data=None, log_scale: bool = True, show: bool | None = None):
-        """Plot I(q); see :func:`gsc.plotting.plot_profile`."""
+        """Plot I(q); see :func:`sinccity.plotting.plot_profile`."""
         from .plotting import plot_profile
 
         return plot_profile(self, data=data, log_scale=log_scale, show=show)
