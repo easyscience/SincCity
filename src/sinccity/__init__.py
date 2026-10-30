@@ -17,7 +17,7 @@ Example:
     >>> data = profile.to_data1d()          # a Data1D for IQuana.set_data
 """
 
-__version__ = '0.1.0'
+__version__ = '0.2.0'
 
 from ._console import set_verbosity
 from .calculator import GenericScatteringCalculator, ScatteringProfile

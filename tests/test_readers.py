@@ -4,7 +4,7 @@ import warnings
 
 import numpy as np
 import pytest
-from support import C60, CUBE_VTK, quiet_calculator
+from support import C60, CUBE_VTK, gro_text, quiet_calculator
 
 from sinccity import StructureError, load, read_gro, read_pdb, read_sld, read_vtk
 from sinccity.readers import cell_geometry
@@ -120,16 +120,6 @@ class TestPdb:
 # ============================================================================
 # GRO
 # ============================================================================
-
-
-def gro_text(atoms, box='   5.00000   6.00000   7.00000', ndec=3):
-    """A .gro file; atoms are (resid, resname, name, x, y, z) in nm."""
-    width = ndec + 5
-    lines = ['written by a test', f'{len(atoms):5d}']
-    for number, (resid, resname, name, *xyz) in enumerate(atoms, start=1):
-        position = ''.join(f'{v:{width}.{ndec}f}' for v in xyz)
-        lines.append(f'{resid % 100000:>5d}{resname:<5}{name:>5}{number % 100000:>5d}{position}')
-    return '\n'.join([*lines, box]) + '\n'
 
 
 class TestGro:

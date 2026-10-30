@@ -2,16 +2,19 @@
 
 import copy
 import json
+import multiprocessing
 import pickle
 import subprocess
 import sys
 import warnings
+from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 import pytest
-from support import C60, quiet_calculator, sphere_pixels
+from support import C60, gro_text, quiet_calculator, run_task, sphere_pixels
 
 import sinccity
+import sinccity.calculator
 from sinccity import CalculationInterrupted, GenericScatteringCalculator, Structure, StructureError
 from sinccity.debye import debye_pairs
 from sinccity.elements import constants
@@ -288,6 +291,110 @@ class TestSizes:
 
 
 # ============================================================================
+# Series
+# ============================================================================
+
+SERIES = [
+    {'label': 'h-CTA in D2O', 'params': {'sld_solvent': 6.36}},
+    {'label': 'd-CTA in H2O', 'params': {'sld_solvent': -0.56, 'deuterated': ['CTA']}},
+    {'label': 'h-CTA in H2O', 'params': {'sld_solvent': -0.56}},
+    {'label': 'd-CTA in D2O', 'params': {'sld_solvent': 6.36, 'deuterated': ['CTA']}},
+]
+
+
+@pytest.fixture
+def micelle(tmp_path):
+    """A .gro file of eight CTA molecules and a water, CTA read and unwrapped."""
+    rng = np.random.default_rng(9)
+    atoms = []
+    for resid in range(1, 9):
+        centre = rng.normal(size=3) * 0.5 + 2.5
+        for name in ('N1', 'C1', 'H1', 'H2'):
+            atoms.append((resid, 'CTA', name, *(centre + rng.normal(size=3) * 0.1)))
+    atoms.append((9, 'SOL', 'OW', 0.2, 0.2, 0.2))
+    path = tmp_path / 'micelle.gro'
+    path.write_text(gro_text(atoms, box='   5.0   5.0   5.0'))
+    calc = quiet_calculator(sinccity.load(path, residues=['CTA']))
+    calc.set_params(scale=0.01, size_pd=0.1)
+    return calc
+
+
+@pytest.fixture
+def passes(monkeypatch):
+    """Counts the histogram pair passes."""
+    calls = []
+    original = sinccity.calculator.spectrum_histogram
+
+    def counted(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(sinccity.calculator, 'spectrum_histogram', counted)
+    return calls
+
+
+@pytest.mark.filterwarnings('ignore:Atomic volumes')
+class TestSeries:
+    def test_labels(self, micelle):
+        assert micelle.calculate().label == 'micelle.gro'
+        profile = micelle.calculate(label='CTA micelle')
+        assert profile.label == 'CTA micelle' and profile.to_data1d().title == 'GSC CTA micelle'
+        assert ('Label', 'CTA micelle') in profile._lines()
+
+    def test_series_equals_separate_calculations(self, micelle, passes):
+        before = micelle.get_params()
+        profiles = micelle.calculate_series(SERIES)
+        assert len(passes) == 2  # one pair pass per deuteration state
+        assert [p.label for p in profiles] == [entry['label'] for entry in SERIES]
+        assert micelle.get_params() == before and micelle.profile is profiles[-1]
+        for entry, profile in zip(SERIES, profiles):
+            single = quiet_calculator(micelle.structure)
+            single.set_params(scale=0.01, size_pd=0.1, **entry['params'])
+            assert np.allclose(profile.intensity, single.calculate().intensity, rtol=1e-12)
+            assert profile.params['sld_solvent'] == entry['params']['sld_solvent']
+            assert profile.deuterated == tuple(entry['params'].get('deuterated', ()))
+
+    def test_bad_entries_are_refused_before_anything_runs(self, micelle, passes):
+        with pytest.raises(ValueError, match=r"Series entry 1 \('bad'\): Unknown parameter 'sld'"):
+            micelle.calculate_series([SERIES[0], {'label': 'bad', 'params': {'sld': 1.0}}])
+        with pytest.raises(ValueError, match='Series entry 0 .*unknown keys lable'):
+            micelle.calculate_series([{'lable': 'typo'}])
+        with pytest.raises(ValueError, match='Series entry 0 .*size_pd must be'):
+            micelle.calculate_series([{'params': {'size_pd': -1}}])
+        assert passes == []
+
+    def test_an_interrupted_series_changes_nothing(self, micelle):
+        first = micelle.calculate()
+        before = micelle.get_params()
+        with pytest.raises(CalculationInterrupted):
+            micelle.calculate_series(SERIES, progress=lambda fraction: fraction > 0.6)
+        assert micelle.profile is first and micelle.get_params() == before
+        seen = []
+        micelle.calculate_series(SERIES, progress=seen.append)
+        assert seen[-1] == 1.0 and seen == sorted(seen)
+
+    def test_a_worker_process_replays_settings_and_series(self, micelle):
+        settings = micelle.get_settings()
+        assert settings['reader_options']['residues'] == ['CTA']
+        assert settings['params']['size_pd'] == 0.1
+        task = json.dumps([settings, SERIES])  # plain JSON, as it crosses processes
+        expected = [p.intensity for p in micelle.calculate_series(SERIES)]
+        with ProcessPoolExecutor(1, mp_context=multiprocessing.get_context('spawn')) as pool:
+            child = pool.submit(run_task, task).result(timeout=300)
+        assert all(np.allclose(a, b, rtol=1e-12) for a, b in zip(child, expected))
+
+    @pytest.mark.filterwarnings('ignore::UserWarning')  # the whole file, read without a selection
+    def test_records_of_version_0_1_still_replay(self, micelle):
+        settings = micelle.get_settings()
+        settings['reader_options'] = {'include_hetatm': False}
+        settings['params'] = {key: settings['params'][key] for key in ('scale', 'background')}
+        settings['versions'] = {'gsc': '0.1.0'}
+        replay = GenericScatteringCalculator.from_settings(settings)
+        # atoms: the pair sum of 0.1.0, so the record gives the curve it was made with
+        assert replay.get_params()['kernel'] == 'pairs' and replay.structure.n_points == 33
+
+
+# ============================================================================
 # Calculator state and output
 # ============================================================================
 
@@ -379,6 +486,7 @@ class TestCalculator:
         with pytest.raises(ValueError, match='dI'):
             profile.to_data1d(dI=np.full(profile.q.size, -0.1))
 
+    @pytest.mark.filterwarnings('ignore:.*guessed from atom names')
     def test_describe_settings_and_replay(self, tmp_path, capsys):
         path = tmp_path / 'c60.pdb'
         path.write_bytes(open(C60, 'rb').read())

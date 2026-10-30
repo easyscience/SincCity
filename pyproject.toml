@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "SincCity"
-version = "0.1.0"
-description = "Generic Scattering Calculator: I(q) of a real-space structure (PDB, SLD or VTK)"
+version = "0.2.0"
+description = "Generic Scattering Calculator: I(q) of a real-space structure (PDB, GRO, SLD or VTK)"
 requires-python = ">=3.10"
 license = {text = "BSD-3-Clause"}
 authors = [

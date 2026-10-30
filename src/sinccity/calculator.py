@@ -15,6 +15,7 @@ from . import __version__
 from ._console import ANGSTROM, CUBIC_ANGSTROM, INVERSE_ANGSTROM, OK, SLD_UNIT, logger
 from .debye import (
     LATTICE_MAX_CELLS,
+    CalculationInterrupted,
     debye_pairs,
     lattice_cells,
     spectrum_histogram,
@@ -52,7 +53,70 @@ NEAR_MATCH = 1e-6
 #: The point-per-cell approximation is flagged above q * cell size = 1.
 CELL_SIZE_LIMIT = 1.0
 
+#: The parameters ``set_params`` takes, and their defaults.
+DEFAULT_PARAMS: dict[str, Any] = {
+    'scale': 1.0,
+    'background': 0.0,
+    'sld_solvent': 0.0,
+    'normalisation_volume': 'auto',
+    'deuterated': (),
+    'kernel': 'auto',
+    'histogram_bin': 'auto',
+    'size_pd': 0.0,
+    'size_pd_n': 35,
+    'size_pd_nsigma': 3.0,
+}
+
 _UNSET = object()
+
+
+def _check_param(name: str, value: Any) -> Any:
+    """*value* checked and normalised for the parameter *name*.
+
+    Raises:
+        ValueError: If the value is not allowed.
+    """
+    if name in ('normalisation_volume', 'histogram_bin') and value == 'auto':
+        return value
+    if name == 'deuterated':
+        return () if value is None else tuple(residue_names(value, 'deuterated'))
+    if name == 'kernel':
+        if value not in KERNELS:
+            raise ValueError(f'kernel must be one of {", ".join(KERNELS)}, got {value!r}.')
+        return value
+    if name == 'size_pd_n':
+        if int(value) != value or value < 1:
+            raise ValueError(f'size_pd_n must be an integer of at least 1, got {value!r}.')
+        return int(value)
+    value = float(value)
+    if name == 'sld_solvent':
+        if not np.isfinite(value):
+            raise ValueError(f'sld_solvent must be finite, got {value}.')
+        if 0 < abs(value) < 1e-3:
+            warnings.warn(
+                f'sld_solvent={value:g} is in 10^-6 Ang^-2 and looks like a value in Ang^-2. '
+                f'Did you mean {value * 1e6:g}?',
+                stacklevel=4,
+            )
+        return value
+    if name in ('normalisation_volume', 'histogram_bin'):
+        if not np.isfinite(value) or value <= 0:
+            raise ValueError(f"{name} must be > 0 or 'auto', got {value}.")
+        return value
+    positive = name == 'size_pd_nsigma'  # scale, background and size_pd may be 0
+    if not np.isfinite(value) or value < 0 or (positive and value == 0):
+        raise ValueError(f'{name} must be finite and {"> 0" if positive else ">= 0"}, got {value}.')
+    return value
+
+
+def _checked_params(params: dict[str, Any], changes: dict[str, Any]) -> dict[str, Any]:
+    """A copy of *params* with *changes* checked and applied."""
+    new = dict(params)
+    for name, value in changes.items():
+        if name not in DEFAULT_PARAMS:
+            raise ValueError(f'Unknown parameter {name!r}; use {", ".join(DEFAULT_PARAMS)}.')
+        new[name] = _check_param(name, value)
+    return new
 
 
 def validate_q_grid(q: Any) -> np.ndarray:
@@ -109,6 +173,8 @@ class ScatteringProfile:
             ``'pairs'``, or ``'none'`` when nothing scatters.
         histogram_bin: The histogram bin used, Å; None for other kernels.
         n_sizes: Number of size factors summed (1 without polydispersity).
+        label: The curve's name; the structure file's name unless given.
+        deuterated: The residue names whose hydrogens counted as D.
         notes: Warnings raised while reading and calculating.
         elapsed: Calculation time, s.
     """
@@ -121,6 +187,8 @@ class ScatteringProfile:
     method: str
     histogram_bin: float | None
     n_sizes: int
+    label: str
+    deuterated: tuple[str, ...]
     notes: tuple[str, ...]
     elapsed: float
     _params: dict = field(repr=False)
@@ -191,7 +259,7 @@ class ScatteringProfile:
             if dy.shape != self.q.shape or not np.all(np.isfinite(dy)) or np.any(dy < 0):
                 raise ValueError('dI must be finite, non-negative, and have one value per q.')
         data = Data1D(x=self.q.copy(), y=self.intensity.copy(), dy=dy)
-        data.title = f'GSC {self._structure_summary["basename"]}'
+        data.title = f'GSC {self.label}'
         process = Process()
         process.name = 'sinccity'
         process.description = self._process_text()
@@ -212,10 +280,12 @@ class ScatteringProfile:
     def _lines(self) -> list[tuple[str, str]]:
         s, p = self._structure_summary, self._params
         rows = [
+            ('Label', self.label),
             ('Structure', f'{s["basename"]}: {s["n_points"]} {s["kind"]}'),
             ('q', f'{self.q.size} points, {self.q[0]:.4g} to {self.q[-1]:.4g} {INVERSE_ANGSTROM}'),
             ('I(q)', f'{np.nanmin(self.intensity):.4g} to {np.nanmax(self.intensity):.4g} 1/cm'),
             ('Solvent SLD', f'{p["sld_solvent"]:g} {SLD_UNIT}'),
+            ('Deuterated', ', '.join(self.deuterated) or 'none'),
             ('Scale, background', f'{p["scale"]:g}, {p["background"]:g} 1/cm'),
             (
                 'V_norm',
@@ -284,18 +354,7 @@ class GenericScatteringCalculator:
         self._profile: ScatteringProfile | None = None
         self._q_args: dict[str, Any] | None = dict(DEFAULT_Q_GRID)
         self._q = _q_grid(**DEFAULT_Q_GRID)
-        self._params: dict[str, Any] = {
-            'scale': 1.0,
-            'background': 0.0,
-            'sld_solvent': 0.0,
-            'normalisation_volume': 'auto',
-            'deuterated': (),
-            'kernel': 'auto',
-            'histogram_bin': 'auto',
-            'size_pd': 0.0,
-            'size_pd_n': 35,
-            'size_pd_nsigma': 3.0,
-        }
+        self._params: dict[str, Any] = dict(DEFAULT_PARAMS)
         # (structure, deuterated, kernel, active mask, bin, spectrum) of the last pair pass
         self._cache: tuple | None = None
         if isinstance(structure, Structure):
@@ -423,61 +482,8 @@ class GenericScatteringCalculator:
             size_pd_n: Number of sizes, >= 1.
             size_pd_nsigma: Half-range of the sizes in standard deviations, > 0.
         """
-        new = dict(self._params)
-        for name, value, lower in (('scale', scale, 0.0), ('background', background, 0.0)):
-            if value is not _UNSET:
-                value = float(value)
-                if not np.isfinite(value) or value < lower:
-                    raise ValueError(f'{name} must be finite and >= {lower:g}, got {value}.')
-                new[name] = value
-        if sld_solvent is not _UNSET:
-            value = float(sld_solvent)
-            if not np.isfinite(value):
-                raise ValueError(f'sld_solvent must be finite, got {value}.')
-            if 0 < abs(value) < 1e-3:
-                warnings.warn(
-                    f'sld_solvent={value:g} is in 10^-6 Ang^-2 and looks like a value in Ang^-2. '
-                    f'Did you mean {value * 1e6:g}?',
-                    stacklevel=2,
-                )
-            new['sld_solvent'] = value
-        if normalisation_volume is not _UNSET:
-            if normalisation_volume != 'auto':
-                value = float(normalisation_volume)
-                if not np.isfinite(value) or value <= 0:
-                    raise ValueError(f"normalisation_volume must be > 0 or 'auto', got {value}.")
-                normalisation_volume = value
-            new['normalisation_volume'] = normalisation_volume
-        if deuterated is not _UNSET:
-            new['deuterated'] = (
-                () if deuterated is None else tuple(residue_names(deuterated, 'deuterated'))
-            )
-        if kernel is not _UNSET:
-            if kernel not in KERNELS:
-                raise ValueError(f'kernel must be one of {", ".join(KERNELS)}, got {kernel!r}.')
-            new['kernel'] = kernel
-        if histogram_bin is not _UNSET:
-            if histogram_bin != 'auto':
-                value = float(histogram_bin)
-                if not np.isfinite(value) or value <= 0:
-                    raise ValueError(f"histogram_bin must be > 0 or 'auto', got {value}.")
-                histogram_bin = value
-            new['histogram_bin'] = histogram_bin
-        if size_pd is not _UNSET:
-            value = float(size_pd)
-            if not np.isfinite(value) or value < 0:
-                raise ValueError(f'size_pd must be finite and >= 0, got {value}.')
-            new['size_pd'] = value
-        if size_pd_n is not _UNSET:
-            if int(size_pd_n) != size_pd_n or size_pd_n < 1:
-                raise ValueError(f'size_pd_n must be an integer of at least 1, got {size_pd_n!r}.')
-            new['size_pd_n'] = int(size_pd_n)
-        if size_pd_nsigma is not _UNSET:
-            value = float(size_pd_nsigma)
-            if not np.isfinite(value) or value <= 0:
-                raise ValueError(f'size_pd_nsigma must be finite and > 0, got {value}.')
-            new['size_pd_nsigma'] = value
-        self._params = new
+        changes = {k: v for k, v in locals().items() if k != 'self' and v is not _UNSET}
+        self._params = _checked_params(self._params, changes)
         self._profile = None
         logger.info(f'{OK} Parameters: {self._describe_params()}')
 
@@ -521,14 +527,88 @@ class GenericScatteringCalculator:
         except StructureError as exc:
             raise StructureError(f'{exc} Pass set_params(deuterated=()) to clear it.') from exc
 
-    def calculate(self, *, progress: Callable[[float], bool | None] | None = None):
+    def calculate(
+        self, *, progress: Callable[[float], bool | None] | None = None, label: str | None = None
+    ) -> ScatteringProfile:
         """Compute I(q) on the current grid and return a :class:`ScatteringProfile`.
 
         Args:
-            progress: Optional callback for long pair loops. It receives the
+            progress: Optional callback for long pair passes. It receives the
                 completed fraction; returning True stops the calculation with
                 ``CalculationInterrupted``, leaving the previous state intact.
+            label: The curve's name; the structure file's name by default.
         """
+        profile = self._compute(progress, label)
+        self._profile = profile
+        return profile
+
+    def calculate_series(
+        self,
+        series: list[dict[str, Any]],
+        *,
+        progress: Callable[[float], bool | None] | None = None,
+    ) -> list[ScatteringProfile]:
+        """Compute one profile per entry of *series*, on the current structure and q grid.
+
+        Each entry is ``{'label': ..., 'params': {...}}``: ``set_params`` keys
+        that override the current parameters for that entry only. Every entry
+        is checked before anything runs. Entries run grouped by deuteration
+        and kernel, so the pair pass runs once per group, and come back in the
+        order given. A series is plain JSON, so ``get_settings()`` plus a series
+        is a task another process runs with
+        ``from_settings(settings).calculate_series(series)``.
+
+        Afterwards the parameters are those before the call, and ``profile``
+        is that of the last entry.
+
+        Args:
+            series: The entries.
+            progress: Receives the completed fraction of the whole series;
+                returning True stops it with ``CalculationInterrupted`` and
+                leaves the parameters and ``profile`` as they were.
+
+        Raises:
+            ValueError: Naming the entry whose key or value is not allowed.
+        """
+        entries = []
+        for number, entry in enumerate(series):
+            try:
+                unknown = sorted(set(entry) - {'label', 'params'})
+                if unknown:
+                    raise ValueError(f'unknown keys {", ".join(unknown)}; use label and params.')
+                params = _checked_params(self._params, entry.get('params', {}))
+            except (ValueError, TypeError) as exc:
+                raise ValueError(f'Series entry {number} ({entry.get("label")!r}): {exc}') from exc
+            entries.append((entry.get('label'), params))
+
+        def group(index: int) -> tuple:
+            p = entries[index][1]
+            return p['deuterated'], p['kernel'], self._bin_width(p)  # finer bins first
+
+        def overall(done: int):
+            """The progress callback of one entry, reporting the fraction of the series."""
+            if progress is None:
+                return None
+            return lambda fraction: progress((done + fraction) / len(entries))
+
+        profiles: list[ScatteringProfile | None] = [None] * len(entries)
+        saved = self._params
+        try:
+            for done, index in enumerate(sorted(range(len(entries)), key=group)):
+                label, params = entries[index]
+                self._params = params  # the entry's parameters, for its profile only
+                report = overall(done)
+                profiles[index] = self._compute(report, label)
+                if report is not None and report(1.0):
+                    raise CalculationInterrupted('Series stopped by the progress callback.')
+        finally:
+            self._params = saved
+        if profiles:
+            self._profile = profiles[-1]
+        return profiles
+
+    def _compute(self, progress, label: str | None) -> ScatteringProfile:
+        """The profile for the current parameters; the caller decides whether to keep it."""
         structure = self._require_structure()
         p = self._params
         q = self._q
@@ -541,7 +621,7 @@ class GenericScatteringCalculator:
         explicit = p['normalisation_volume'] != 'auto'
         start = time.perf_counter()
         bin_width = None
-        factors, shares = self._sizes()
+        factors, shares = self._sizes(p)
 
         if not active.any():
             self._warn(
@@ -568,6 +648,7 @@ class GenericScatteringCalculator:
             'kind': structure.kind,
             'n_points': structure.n_points,
             'reader_options': copy.deepcopy(structure.reader_options),
+            'element_sources': dict(structure.element_sources),
             'notes': list(structure.notes),
         }
         profile = ScatteringProfile(
@@ -579,12 +660,13 @@ class GenericScatteringCalculator:
             method=method,
             histogram_bin=bin_width,
             n_sizes=int(factors.size),
+            label=os.path.basename(structure.source) if label is None else str(label),
+            deuterated=p['deuterated'],
             notes=tuple(notes),
             elapsed=time.perf_counter() - start,
             _params=dict(p),
             _structure_summary=summary,
         )
-        self._profile = profile
         logger.info(
             f'{OK} I(q) at {q.size} q values: {int(active.sum())} scattering points, '
             f'{n_zero} at zero contrast, V_norm {v_norm:.6g} {CUBIC_ANGSTROM} '
@@ -594,7 +676,7 @@ class GenericScatteringCalculator:
 
     @staticmethod
     def _warn(notes: list[str], text: str) -> None:
-        warnings.warn(text, stacklevel=4)
+        warnings.warn(text, stacklevel=5)
         notes.append(text)
 
     def _check(self, structure: Structure, contrast, active, f_max, notes: list[str]) -> None:
@@ -663,16 +745,16 @@ class GenericScatteringCalculator:
             )
         return requested
 
-    def _sizes(self) -> tuple[np.ndarray, np.ndarray]:
-        """The size factors and their shares, from the ``size_pd`` parameters."""
-        p = self._params
+    @staticmethod
+    def _sizes(p: dict[str, Any]) -> tuple[np.ndarray, np.ndarray]:
+        """The size factors and their shares, from the ``size_pd`` parameters in *p*."""
         return gaussian_sizes(p['size_pd'], p['size_pd_n'], p['size_pd_nsigma'])
 
-    def _bin_width(self) -> float:
-        """The histogram bin, Å: as set, or the largest that keeps the phase error small."""
-        if self._params['histogram_bin'] != 'auto':
-            return self._params['histogram_bin']
-        return min(HISTOGRAM_BIN_MAX, HISTOGRAM_PHASE / (self._q[-1] * self._sizes()[0].max()))
+    def _bin_width(self, p: dict[str, Any]) -> float:
+        """The histogram bin for *p*, Å: as set, or the largest that keeps the phase error small."""
+        if p['histogram_bin'] != 'auto':
+            return p['histogram_bin']
+        return min(HISTOGRAM_BIN_MAX, HISTOGRAM_PHASE / (self._q[-1] * self._sizes(p)[0].max()))
 
     def _debye(self, kernel, structure, sld, active, progress, notes):
         """D(q) of the *active* points with SLDs *sld*, summed over the sizes.
@@ -683,7 +765,7 @@ class GenericScatteringCalculator:
         q = self._q
         rho = self._params['sld_solvent'] * 1e-6
         n = int(active.sum())
-        factors, shares = self._sizes()
+        factors, shares = self._sizes(self._params)
 
         def over_sizes(one) -> np.ndarray:
             return sum(s * f**6 * one(i, f) for i, (f, s) in enumerate(zip(factors, shares)))
@@ -731,7 +813,7 @@ class GenericScatteringCalculator:
         with a finer bin than the one needed included.
         """
         deuterated = self._params['deuterated']
-        bin_width = self._bin_width() if kernel == 'histogram' else None
+        bin_width = self._bin_width(self._params) if kernel == 'histogram' else None
         if self._cache is not None:
             c_structure, c_deuterated, c_kernel, c_active, c_bin, spectrum = self._cache
             if (
