@@ -134,7 +134,7 @@ New members:
 | Member | What it does |
 |---|---|
 | `Structure.from_atoms(xyz, symbols, *, resids=None, resnames=None, names=None, bonds=None)` | NEW class method: atoms whose `sld` and `volume` come from the elements (`elements.constants`). This is how shapespyer hands over atoms it read itself, without a file. `source='in-memory'`, `format='arrays'`, `element_sources` `'given'` per residue name, `reader_options=None` |
-| `structure.deuterated(residues)` | NEW: a copy in which the hydrogens of these residues have the SLD of D; volumes unchanged (D and H have the same natural volume). Unknown residue name, or a structure without residue data: `StructureError`. The copy keeps `source` and `source_sha256`; `reader_options=None` |
+| `structure.deuterated(residues)` | NEW: a copy in which the hydrogens of these residues have the SLD of D; volumes unchanged (D and H have the same natural volume). Unknown residue name, a residue name without hydrogens, or a structure without residue data: `StructureError`. The copy keeps `source` and `source_sha256`; `reader_options=None` |
 | `structure.with_symbols(symbols)` | NEW: a copy with corrected elements, `sld` and `volume` recomputed, `element_sources` set to `'elements'` for every residue touched. Replaces coords2sans's editable `elements`. The copy keeps `source` and `source_sha256`; `reader_options=None` |
 | `structure.centre` | NEW property: the middle of the bounding box, as SasView's `transform_center`; the ⟨A⟩² kernel's origin |
 | `structure.summary()`, `describe()` | extended: residue count, residue names with atom counts, `element_sources`, box |

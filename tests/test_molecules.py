@@ -124,6 +124,27 @@ class TestDerivedStructures:
         with pytest.raises(ValueError, match='set_structure'):
             GenericScatteringCalculator.from_settings(settings)
 
+    def test_deuterated_changes_only_the_named_hydrogens(self):
+        s = Structure.from_atoms(
+            np.arange(15.0).reshape(5, 3),
+            ['C', 'H', 'H', 'O', 'H'],
+            resids=[1, 1, 1, 2, 2],
+            resnames=['CTA', 'CTA', 'CTA', 'SOL', 'SOL'],
+        )
+        d = s.deuterated(['CTA'])
+        assert np.allclose(d.sld, [s.sld[0], *[constants('D')[0]] * 2, *s.sld[3:]])
+        assert np.array_equal(d.volume, s.volume) and d.symbols.tolist() == s.symbols.tolist()
+        assert d.reader_options is None
+        assert np.array_equal(s.deuterated('SOL').sld[:4], s.sld[:4])
+        with pytest.raises(StructureError, match='not in the structure: CTAB'):
+            s.deuterated(['CTAB'])
+        ion = Structure.from_atoms([[0.0, 0, 0]], ['Br'], resids=[1], resnames=['BR'])
+        with pytest.raises(StructureError, match='No hydrogens to deuterate in BR'):
+            ion.deuterated('BR')
+        pixels = Structure.from_arrays([[0.0, 0, 0]], [1e-6], [1.0])
+        with pytest.raises(StructureError, match='residue names'):
+            pixels.deuterated(['CTA'])
+
     def test_summary_lists_residues_and_sources(self):
         s = read_pdb(C60)
         info = s.summary()

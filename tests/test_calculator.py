@@ -14,6 +14,7 @@ from support import C60, quiet_calculator, sphere_pixels
 import sinccity
 from sinccity import CalculationInterrupted, GenericScatteringCalculator, Structure, StructureError
 from sinccity.debye import debye_pairs
+from sinccity.elements import constants
 
 # ============================================================================
 # Normalisation and warnings
@@ -74,6 +75,37 @@ class TestNormalisation:
         with pytest.warns(UserWarning, match='almost match the solvent'):
             profile = calc.calculate()
         assert any('almost match' in note for note in profile.notes)
+
+    def test_deuterated_equals_a_structure_written_with_d(self):
+        xyz = np.random.default_rng(4).normal(size=(6, 3)) * 3
+        resnames = ['CTA'] * 3 + ['SOL'] * 3
+        resids = [1, 1, 1, 2, 2, 2]
+        hydrogen = Structure.from_atoms(
+            xyz, ['C', 'H', 'H', 'O', 'H', 'H'], resids=resids, resnames=resnames
+        )
+        written = Structure.from_atoms(
+            xyz, ['C', 'D', 'D', 'O', 'H', 'H'], resids=resids, resnames=resnames
+        )
+        calc = quiet_calculator(hydrogen, qmax=0.5)
+        calc.set_params(sld_solvent=-0.56, deuterated='CTA')
+        assert calc.get_params()['deuterated'] == ('CTA',)
+        reference = quiet_calculator(written, qmax=0.5)
+        reference.set_params(sld_solvent=-0.56)
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', message='Atomic volumes')
+            assert np.allclose(calc.calculate().intensity, reference.calculate().intensity)
+        colours = calc.plot_points(color='sld', show=False).data[0].marker.color
+        assert np.isclose(colours, constants('D')[0] * 1e6).sum() == 2  # the two CTA hydrogens
+
+        calc.set_params(deuterated=['CTAB'])
+        with pytest.raises(StructureError, match=r'CTAB\. Pass set_params\(deuterated=\(\)\)'):
+            calc.calculate()
+        with pytest.raises(StructureError, match='CTAB'):
+            calc.describe()  # counts zero contrast with the deuterated SLD
+        with pytest.raises(ValueError, match='residue names'):
+            calc.set_params(deuterated=[1])
+        calc.set_params(deuterated=None)
+        assert calc.get_params()['deuterated'] == ()
 
     def test_solvent_in_wrong_units_warns(self):
         with pytest.warns(UserWarning, match='Did you mean 6.4'):
@@ -212,6 +244,26 @@ class TestCalculator:
             GenericScatteringCalculator.from_settings(settings)
         profile.save_csv(tmp_path / 'profile.csv')
         assert np.loadtxt(tmp_path / 'profile.csv', delimiter=',').shape == (20, 2)
+
+    def test_settings_replay_deuteration(self, tmp_path):
+        path = tmp_path / 'cta.pdb'
+        atoms = [('C1', 0.0, 'C'), ('H1', 1.1, 'H'), ('H2', -1.1, 'H')]
+        path.write_text(
+            ''.join(
+                f'ATOM  {i:>5} {name:<4} CTA A   1    {x:8.3f}{0.0:8.3f}{0.0:8.3f}'
+                f'{1.0:6.2f}{0.0:6.2f}          {element:>2}\n'
+                for i, (name, x, element) in enumerate(atoms, start=1)
+            )
+        )
+        calc = quiet_calculator(sinccity.load(path))
+        calc.set_params(sld_solvent=-0.56, deuterated='CTA')
+        settings = json.loads(json.dumps(calc.get_settings()))
+        assert settings['params']['deuterated'] == ['CTA']
+        replay = GenericScatteringCalculator.from_settings(settings)
+        assert replay.get_params()['deuterated'] == ('CTA',)
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', message='Atomic volumes')
+            assert np.allclose(replay.calculate().intensity, calc.calculate().intensity)
 
     def test_settings_keep_the_reader_options_of_an_installed_structure(self, tmp_path):
         path = tmp_path / 'two.pdb'

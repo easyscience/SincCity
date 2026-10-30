@@ -15,7 +15,7 @@ from . import __version__
 from ._console import ANGSTROM, CUBIC_ANGSTROM, INVERSE_ANGSTROM, OK, SLD_UNIT, logger
 from .debye import LATTICE_MAX_CELLS, debye_lattice, debye_pairs, lattice_cells
 from .elements import AVOGADRO
-from .model import PROTEIN_SPECIFIC_VOLUME, Structure
+from .model import PROTEIN_SPECIFIC_VOLUME, Structure, StructureError, residue_names
 from .readers import load
 
 #: SasView's default 1D grid: 30 log-spaced points up to 0.3 1/Å.
@@ -238,6 +238,7 @@ class GenericScatteringCalculator:
             'background': 0.0,
             'sld_solvent': 0.0,
             'normalisation_volume': 'auto',
+            'deuterated': (),
         }
         if isinstance(structure, Structure):
             self.set_structure(structure)
@@ -328,6 +329,7 @@ class GenericScatteringCalculator:
         background=_UNSET,
         sld_solvent=_UNSET,
         normalisation_volume=_UNSET,
+        deuterated=_UNSET,
     ) -> None:
         """Set any of the calculation parameters; the others are kept.
 
@@ -339,6 +341,8 @@ class GenericScatteringCalculator:
                 (D2O is 6.34). SasView's calculator takes Å⁻² instead.
             normalisation_volume: V_norm in Å³, or ``'auto'`` for the volume of
                 the points that scatter. SasView calls this field total_volume.
+            deuterated: Residue names whose hydrogens count as D, applied with
+                ``Structure.deuterated`` at ``calculate()``; None or ``()`` for none.
         """
         new = dict(self._params)
         for name, value, lower in (('scale', scale, 0.0), ('background', background, 0.0)):
@@ -365,6 +369,10 @@ class GenericScatteringCalculator:
                     raise ValueError(f"normalisation_volume must be > 0 or 'auto', got {value}.")
                 normalisation_volume = value
             new['normalisation_volume'] = normalisation_volume
+        if deuterated is not _UNSET:
+            new['deuterated'] = (
+                () if deuterated is None else tuple(residue_names(deuterated, 'deuterated'))
+            )
         self._params = new
         self._profile = None
         logger.info(f'{OK} Parameters: {self._describe_params()}')
@@ -376,10 +384,13 @@ class GenericScatteringCalculator:
         p = self._params
         volume = p['normalisation_volume']
         volume = volume if volume == 'auto' else f'{volume:.6g} {CUBIC_ANGSTROM}'
-        return (
+        text = (
             f'scale {p["scale"]:g}, background {p["background"]:g} 1/cm, '
             f'sld_solvent {p["sld_solvent"]:g} {SLD_UNIT}, normalisation volume {volume}'
         )
+        if p['deuterated']:
+            text += f', deuterated {", ".join(p["deuterated"])}'
+        return text
 
     # ------------------------------------------------------------ calculation
 
@@ -387,6 +398,16 @@ class GenericScatteringCalculator:
         if self._structure is None:
             raise ValueError('No structure loaded. Use load_structure() first.')
         return self._structure
+
+    def _scattering_structure(self) -> Structure:
+        """The current structure as it scatters: the ``deuterated`` hydrogens as D."""
+        structure = self._require_structure()
+        if not self._params['deuterated']:
+            return structure
+        try:
+            return structure.deuterated(self._params['deuterated'])
+        except StructureError as exc:
+            raise StructureError(f'{exc} Pass set_params(deuterated=()) to clear it.') from exc
 
     def calculate(self, *, progress: Callable[[float], bool | None] | None = None):
         """Compute I(q) on the current grid and return a :class:`ScatteringProfile`.
@@ -401,7 +422,7 @@ class GenericScatteringCalculator:
         q = self._q
         notes = list(structure.notes)
         rho = p['sld_solvent'] * 1e-6
-        contrast = structure.sld - rho
+        contrast = self._scattering_structure().sld - rho
         weight = contrast * structure.volume
         active = weight != 0
         n_zero = int(np.sum(~active))
@@ -532,9 +553,8 @@ class GenericScatteringCalculator:
 
     def describe(self) -> None:
         """Print the structure, the q grid and the parameters."""
-        structure = self._require_structure()
-        structure.describe()
-        contrast = structure.sld - self._params['sld_solvent'] * 1e-6
+        self._require_structure().describe()
+        contrast = self._scattering_structure().sld - self._params['sld_solvent'] * 1e-6
         print(f'  {"Zero contrast":<18} {int(np.sum(contrast == 0))} points at the current solvent')
         print(
             f'  {"q grid":<18} {self._q.size} points, {self._q[0]:.4g} to {self._q[-1]:.4g} {INVERSE_ANGSTROM}'
@@ -542,9 +562,13 @@ class GenericScatteringCalculator:
         print(f'  {"Parameters":<18} {self._describe_params()}')
 
     def plot_points(self, **kwargs: Any):
-        """Draw the structure's points; zero-contrast points use the current solvent."""
+        """Draw the structure's points as they scatter.
+
+        Zero-contrast points use the current solvent, and the ``deuterated``
+        hydrogens have the SLD of D.
+        """
         kwargs.setdefault('sld_solvent', self._params['sld_solvent'])
-        return self._require_structure().plot_points(**kwargs)
+        return self._scattering_structure().plot_points(**kwargs)
 
     def plot_profile(self, *, data=None, log_scale: bool = True, show: bool | None = None):
         """Plot the current profile, optionally over measured *data* (a ``Data1D``)."""
