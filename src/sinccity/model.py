@@ -228,6 +228,29 @@ class Structure:
             element_sources=sources,
         )
 
+    def deuterated(self, residues) -> 'Structure':
+        """A copy in which the hydrogens of these residue names have the SLD of D.
+
+        Volumes are unchanged: D and H have the same natural atomic volume. The
+        copy keeps the source, but no reader made it, so its ``reader_options``
+        are None.
+
+        Raises:
+            StructureError: If the structure has no residue names, or a name is
+                not in it.
+        """
+        from .elements import constants
+
+        residues = [residues] if isinstance(residues, str) else list(residues)
+        if self.resnames is None or self.symbols is None:
+            raise StructureError('Only atoms with residue names can be deuterated.')
+        unknown = sorted(set(residues) - set(self.resnames.tolist()))
+        if unknown:
+            raise StructureError(f'Deuterated residues not in the structure: {", ".join(unknown)}.')
+        sld = self.sld.copy()
+        sld[(self.symbols == 'H') & np.isin(self.resnames, residues)] = constants('D')[0]
+        return dataclasses.replace(self, sld=sld, reader_options=None)
+
     def with_symbols(self, symbols) -> 'Structure':
         """A copy with corrected elements, and SLD and volumes recomputed from them.
 

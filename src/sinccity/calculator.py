@@ -238,6 +238,7 @@ class GenericScatteringCalculator:
             'background': 0.0,
             'sld_solvent': 0.0,
             'normalisation_volume': 'auto',
+            'deuterated': (),
         }
         if isinstance(structure, Structure):
             self.set_structure(structure)
@@ -328,6 +329,7 @@ class GenericScatteringCalculator:
         background=_UNSET,
         sld_solvent=_UNSET,
         normalisation_volume=_UNSET,
+        deuterated=_UNSET,
     ) -> None:
         """Set any of the calculation parameters; the others are kept.
 
@@ -339,6 +341,8 @@ class GenericScatteringCalculator:
                 (D2O is 6.34). SasView's calculator takes Å⁻² instead.
             normalisation_volume: V_norm in Å³, or ``'auto'`` for the volume of
                 the points that scatter. SasView calls this field total_volume.
+            deuterated: Residue names whose hydrogens count as D, applied with
+                ``Structure.deuterated`` at ``calculate()``.
         """
         new = dict(self._params)
         for name, value, lower in (('scale', scale, 0.0), ('background', background, 0.0)):
@@ -365,6 +369,11 @@ class GenericScatteringCalculator:
                     raise ValueError(f"normalisation_volume must be > 0 or 'auto', got {value}.")
                 normalisation_volume = value
             new['normalisation_volume'] = normalisation_volume
+        if deuterated is not _UNSET:
+            names = [deuterated] if isinstance(deuterated, str) else list(deuterated)
+            if not all(isinstance(name, str) for name in names):
+                raise ValueError(f'deuterated must be residue names, got {deuterated!r}.')
+            new['deuterated'] = tuple(names)
         self._params = new
         self._profile = None
         logger.info(f'{OK} Parameters: {self._describe_params()}')
@@ -376,10 +385,13 @@ class GenericScatteringCalculator:
         p = self._params
         volume = p['normalisation_volume']
         volume = volume if volume == 'auto' else f'{volume:.6g} {CUBIC_ANGSTROM}'
-        return (
+        text = (
             f'scale {p["scale"]:g}, background {p["background"]:g} 1/cm, '
             f'sld_solvent {p["sld_solvent"]:g} {SLD_UNIT}, normalisation volume {volume}'
         )
+        if p['deuterated']:
+            text += f', deuterated {", ".join(p["deuterated"])}'
+        return text
 
     # ------------------------------------------------------------ calculation
 
@@ -400,8 +412,9 @@ class GenericScatteringCalculator:
         p = self._params
         q = self._q
         notes = list(structure.notes)
+        sld = structure.deuterated(p['deuterated']).sld if p['deuterated'] else structure.sld
         rho = p['sld_solvent'] * 1e-6
-        contrast = structure.sld - rho
+        contrast = sld - rho
         weight = contrast * structure.volume
         active = weight != 0
         n_zero = int(np.sum(~active))

@@ -75,6 +75,30 @@ class TestNormalisation:
             profile = calc.calculate()
         assert any('almost match' in note for note in profile.notes)
 
+    def test_deuterated_equals_a_structure_written_with_d(self):
+        xyz = np.random.default_rng(4).normal(size=(6, 3)) * 3
+        resnames = ['CTA'] * 3 + ['SOL'] * 3
+        resids = [1, 1, 1, 2, 2, 2]
+        hydrogen = Structure.from_atoms(
+            xyz, ['C', 'H', 'H', 'O', 'H', 'H'], resids=resids, resnames=resnames
+        )
+        written = Structure.from_atoms(
+            xyz, ['C', 'D', 'D', 'O', 'H', 'H'], resids=resids, resnames=resnames
+        )
+        calc = quiet_calculator(hydrogen, qmax=0.5)
+        calc.set_params(sld_solvent=-0.56, deuterated='CTA')
+        assert calc.get_params()['deuterated'] == ('CTA',)
+        reference = quiet_calculator(written, qmax=0.5)
+        reference.set_params(sld_solvent=-0.56)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')  # the atomic-volume warning
+            assert np.allclose(calc.calculate().intensity, reference.calculate().intensity)
+        calc.set_params(deuterated=['CTAB'])
+        with pytest.raises(StructureError, match='CTAB'):
+            calc.calculate()
+        with pytest.raises(ValueError, match='residue names'):
+            calc.set_params(deuterated=[1])
+
     def test_solvent_in_wrong_units_warns(self):
         with pytest.warns(UserWarning, match='Did you mean 6.4'):
             quiet_calculator().set_params(sld_solvent=6.4e-6)

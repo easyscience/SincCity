@@ -64,6 +64,12 @@ default). SasView calls the override `total_volume` and, when some points
 have zero contrast, also multiplies by the ratio of all points' volume to the
 scattering volume. This calculator does not.
 
+**Deuteration.** `set_params(deuterated=['CTA'])` gives the hydrogens of
+these residue names the SLD of D at `calculate()`; volumes are unchanged,
+since D and H have the same natural atomic volume. It needs a structure with
+residue names (PDB, GRO or `Structure.from_atoms` with `resnames=`).
+`structure.deuterated(['CTA'])` returns the same change as a new structure.
+
 ## File formats
 
 Positions are in Å and SLDs in Å⁻² in all four (a `.gro` file's nm are converted).
