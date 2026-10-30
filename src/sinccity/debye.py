@@ -1,21 +1,34 @@
-"""Exact Debye sums for a set of point scatterers.
+"""Debye sums for a set of point scatterers.
 
-Both functions return the same quantity::
+Every kernel computes the same quantity::
 
-    D(q) = sum_j sum_k w_j w_k sin(q r_jk) / (q r_jk)
+    D(q) = sum_j sum_k w_j w_k sin(q r_jk) / (q r_jk),    w_j = b_j - rho v_j
 
-for weights ``w`` (scattering lengths, Å) at positions in Å. ``debye_pairs``
-enumerates pairs and works for any point set. ``debye_lattice`` regroups the
-same sum through the autocorrelation of a weight grid, which is exact when
-every point sits on a lattice and much faster for large grids.
+for scattering lengths ``b`` (Å), volumes ``v`` (Å³) and a solvent SLD
+``rho`` (Å⁻²), at positions in Å. ``debye_pairs`` enumerates pairs and works
+for any point set. The spectrum builders first collect the pairs into a
+:class:`DistanceSpectrum`, a list of distances with the weights b·b, b·v and
+v·v kept apart, so another solvent costs only the sinc sums:
+
+- ``spectrum_lattice``: the autocorrelation of weight grids, exact for points
+  on a lattice and fast for large grids.
+- ``spectrum_histogram``: pairs counted by distance in bins of a given width,
+  for any point set (coords2sans's pass).
+- ``spectrum_radial``: each point's distance from a centre, the squared
+  orientation-averaged amplitude ⟨A⟩², exact only for spherically symmetric
+  structures (SasView's ``is_avg``).
 """
 
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import numpy as np
 
 #: Pairs per block. Small blocks stay in cache; larger ones were measured slower.
 PAIR_BLOCK_ELEMENTS = 50_000
+
+#: Pairs per block of the histogram pass: one matrix product of about this size.
+HISTOGRAM_BLOCK_PAIRS = 1_000_000
 
 #: Largest zero-padded grid the lattice path will allocate, in cells.
 LATTICE_MAX_CELLS = 8_000_000
@@ -47,6 +60,39 @@ def _sinc_sum(q: np.ndarray, r: np.ndarray, weight: np.ndarray) -> np.ndarray:
         s /= qr
         out[i] = flat + np.dot(weight, s)
     return out
+
+
+@dataclass(frozen=True, eq=False)
+class DistanceSpectrum:
+    """The part of a Debye sum that does not depend on q or the solvent.
+
+    Attributes:
+        r: Distances, Å; only those with a non-zero component.
+        components: ``(3, n)``: the summed pair weights b·b, b·v and v·v at
+            each distance, so that ``D = sum (bb - 2 rho bv + rho^2 vv) sinc(q r)``.
+            For a squared spectrum ``(2, n)``: b and v at each distance, so
+            that ``D = (sum (b - rho v) sinc(q r))^2``.
+        squared: Which of the two forms.
+    """
+
+    r: np.ndarray
+    components: np.ndarray
+    squared: bool = False
+
+    def debye(self, q, rho: float) -> np.ndarray:
+        """D(q) at a solvent SLD *rho* in Å⁻²."""
+        q = np.asarray(q, dtype=float)
+        if self.squared:
+            b, v = self.components
+            return _sinc_sum(q, self.r, b - rho * v) ** 2
+        bb, bv, vv = self.components
+        return _sinc_sum(q, self.r, bb - 2 * rho * bv + rho**2 * vv)
+
+
+def _occupied(r: np.ndarray, components: np.ndarray, keep=None) -> DistanceSpectrum:
+    """A pair spectrum without the distances no pair contributes to."""
+    keep = np.any(components != 0, axis=0) if keep is None else keep
+    return DistanceSpectrum(r[keep], components[:, keep])
 
 
 def debye_pairs(
@@ -98,28 +144,30 @@ def lattice_cells(shape) -> int:
     return int(np.prod([2 * n - 1 for n in shape]))
 
 
-def debye_lattice(q, grid_w, step) -> np.ndarray:
-    """Exact Debye sum for weights on a rectangular lattice.
+def spectrum_lattice(grid_b, grid_v, step) -> DistanceSpectrum:
+    """The exact spectrum of weights on a rectangular lattice.
 
     On a lattice every pair displacement is an integer vector Δ, so::
 
-        C(Δ) = sum_x w(x) w(x + Δ)          (autocorrelation of the grid)
-        D(q) = sum_Δ C(Δ) sinc(q |Δ|)
+        C_bv(Δ) = sum_x b(x) v(x + Δ)          (correlation of two grids)
+        D(q) = sum_Δ [C_bb - 2 rho C_bv + rho^2 C_vv](Δ) sinc(q |Δ|)
 
     Lags are grouped by the exact integer key (|i|, |j|, |k|), so no
-    floating-point rounding enters the grouping.
+    floating-point rounding enters the grouping. A lag is kept when some pair
+    of occupied sites has it, which an FFT of the occupation decides; the FFT
+    noise of empty lags is dropped with them.
 
     Args:
-        q: Momentum transfers, 1/Å.
-        grid_w: Weight grid, shape (nx, ny, nz); empty sites hold 0.
+        grid_b: Scattering lengths on the grid, shape (nx, ny, nz); empty sites hold 0.
+        grid_v: Volumes on the same grid.
         step: Lattice steps along x, y and z, Å.
     """
-    q = np.asarray(q, dtype=float)
-    grid_w = np.asarray(grid_w, dtype=float)
-    shape = grid_w.shape
+    grid_b = np.asarray(grid_b, dtype=float)
+    grid_v = np.asarray(grid_v, dtype=float)
+    shape = grid_b.shape
     padded = [2 * n - 1 for n in shape]
-    spectrum = np.fft.rfftn(grid_w, s=padded, axes=(0, 1, 2))
-    corr = np.fft.irfftn(spectrum * spectrum.conj(), s=padded, axes=(0, 1, 2))
+    occupied = ((grid_b != 0) | (grid_v != 0)).astype(float)
+    fb, fv, fo = (np.fft.rfftn(g, s=padded, axes=(0, 1, 2)) for g in (grid_b, grid_v, occupied))
 
     # Index i of a padded axis of length m = 2n - 1 holds lag i for i < n and
     # lag i - m above that; only |lag| matters for the distance.
@@ -128,9 +176,89 @@ def debye_lattice(q, grid_w, step) -> np.ndarray:
         lags[0][:, None, None] * (shape[1] * shape[2])
         + lags[1][None, :, None] * shape[2]
         + lags[2][None, None, :]
+    ).ravel()
+    summed = np.array(
+        [
+            np.bincount(
+                key,
+                weights=np.fft.irfftn(a * c.conj(), s=padded, axes=(0, 1, 2)).ravel(),
+                minlength=int(np.prod(shape)),
+            )
+            for a, c in ((fb, fb), (fb, fv), (fv, fv), (fo, fo))
+        ]
     )
-    summed = np.bincount(key.ravel(), weights=corr.ravel(), minlength=int(np.prod(shape)))
-    ix, iy, iz = np.unravel_index(np.arange(summed.size), shape)
+    ix, iy, iz = np.unravel_index(np.arange(summed.shape[1]), shape)
     step = np.asarray(step, dtype=float)
     r = np.sqrt((ix * step[0]) ** 2 + (iy * step[1]) ** 2 + (iz * step[2]) ** 2)
-    return _sinc_sum(q, r, summed)
+    return _occupied(r, summed[:3], keep=summed[3] > 0.5)  # pair counts are integers
+
+
+def debye_lattice(q, grid_w, step) -> np.ndarray:
+    """Exact Debye sum for weights *grid_w* on a rectangular lattice; see ``spectrum_lattice``."""
+    return spectrum_lattice(grid_w, np.zeros_like(grid_w, dtype=float), step).debye(q, 0.0)
+
+
+def spectrum_histogram(
+    xyz,
+    b,
+    v,
+    bin_width: float,
+    *,
+    block: int | None = None,
+    progress: Callable[[float], bool | None] | None = None,
+) -> DistanceSpectrum:
+    """The spectrum of all pairs, counted by distance rounded to *bin_width*.
+
+    Squared distances come from a matrix product per block of rows; each
+    distance is rounded to the nearest multiple of the bin, which moves a pair
+    by at most bin/2, a phase error of at most q·bin/2. Only occupied bins are
+    kept.
+
+    Args:
+        xyz: Positions, shape (N, 3), Å.
+        b, v: Scattering lengths and volumes, shape (N,).
+        bin_width: Bin width, Å.
+        block: Rows per block. Defaults to about ``HISTOGRAM_BLOCK_PAIRS`` pairs.
+        progress: Called with the completed fraction after each block. A
+            return value of True stops the pass with ``CalculationInterrupted``.
+    """
+    xyz = np.asarray(xyz, dtype=float)
+    xyz = xyz - xyz.mean(axis=0)  # small coordinates keep |a|^2 + |b|^2 - 2 a.b accurate
+    b = np.asarray(b, dtype=float)
+    v = np.asarray(v, dtype=float)
+    n = b.size
+    squares = (xyz**2).sum(axis=1)
+    bins = int(np.linalg.norm(np.ptp(xyz, axis=0)) / bin_width) + 2
+    out = np.zeros((3, bins))
+    block = max(1, block or HISTOGRAM_BLOCK_PAIRS // n)
+    starts = range(0, n, block)
+    total = sum((min(s + block, n) - s) * (n - s) for s in starts)
+    done = 0
+    for start in starts:
+        stop = min(start + block, n)
+        squared = (
+            squares[start:stop, None] + squares[start:] - 2 * (xyz[start:stop] @ xyz[start:].T)
+        )
+        index = np.rint(np.sqrt(np.maximum(squared, 0)) / bin_width).astype(np.intp).ravel()
+        # Pairs inside the block come in both orders; pairs with later rows
+        # come once, so they count twice.
+        twice = np.where(np.arange(start, n) < stop, 1.0, 2.0)
+        bt, vt = b[start:] * twice, v[start:] * twice
+        rows_b, rows_v = b[start:stop, None], v[start:stop, None]
+        out[0] += np.bincount(index, (rows_b * bt).ravel(), bins)
+        out[1] += np.bincount(index, (0.5 * (rows_b * vt + rows_v * bt)).ravel(), bins)
+        out[2] += np.bincount(index, (rows_v * vt).ravel(), bins)
+        done += (stop - start) * (n - start)
+        if progress is not None and progress(done / total):
+            raise CalculationInterrupted('Histogram pass stopped by the progress callback.')
+    return _occupied(np.arange(bins) * bin_width, out)
+
+
+def spectrum_radial(xyz, b, v, centre) -> DistanceSpectrum:
+    """The squared spectrum ⟨A⟩²: each point's distance from *centre*, Å.
+
+    The orientation-averaged amplitude is ``A(q) = sum_j w_j sinc(q |x_j - centre|)``,
+    and ``A(q)^2`` equals D(q) only for spherically symmetric structures.
+    """
+    r = np.linalg.norm(np.asarray(xyz, dtype=float) - np.asarray(centre, dtype=float), axis=1)
+    return DistanceSpectrum(r, np.array([b, v], dtype=float), squared=True)

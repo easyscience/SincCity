@@ -13,7 +13,14 @@ import numpy as np
 
 from . import __version__
 from ._console import ANGSTROM, CUBIC_ANGSTROM, INVERSE_ANGSTROM, OK, SLD_UNIT, logger
-from .debye import LATTICE_MAX_CELLS, debye_lattice, debye_pairs, lattice_cells
+from .debye import (
+    LATTICE_MAX_CELLS,
+    debye_pairs,
+    lattice_cells,
+    spectrum_histogram,
+    spectrum_lattice,
+    spectrum_radial,
+)
 from .elements import AVOGADRO
 from .model import PROTEIN_SPECIFIC_VOLUME, Structure, StructureError, residue_names
 from .readers import load
@@ -23,6 +30,20 @@ DEFAULT_Q_GRID = {'qmin': 3e-4, 'qmax': 0.3, 'npoints': 30, 'spacing': 'log'}
 
 #: Above this many active points the pair loop warns about run time.
 LARGE_PAIR_LOOP = 20_000
+
+#: Above this many active points the histogram pass warns about run time (about
+#: 6 min at 130 000 atoms).
+LARGE_HISTOGRAM = 100_000
+
+#: The ``kernel`` choices; ``'auto'`` is lattice when possible, else histogram.
+KERNELS = ('auto', 'lattice', 'histogram', 'average', 'pairs')
+
+#: The largest histogram bin, Å (coords2sans's, validated to 1e-4 up to q = 0.2 1/Å).
+HISTOGRAM_BIN_MAX = 0.01
+
+#: Largest phase error the automatic bin allows at q_max, rad; rounding moves a
+#: pair by at most half a bin, so the bin is 1e-3 / q_max.
+HISTOGRAM_PHASE = 1e-3
 
 #: A population is "near-matched" when its contrast is this small relative to the largest.
 NEAR_MATCH = 1e-6
@@ -83,7 +104,9 @@ class ScatteringProfile:
             Å³; nan when nothing scatters and no volume was set.
         normalisation: ``'active-volume'`` (the default) or ``'explicit'``.
         n_zero_contrast: Points whose SLD equals the solvent's.
-        method: Kernel used: ``'lattice'``, ``'pairs'`` or ``'none'``.
+        method: Kernel used: ``'lattice'``, ``'histogram'``, ``'average'``,
+            ``'pairs'``, or ``'none'`` when nothing scatters.
+        histogram_bin: The histogram bin used, Å; None for other kernels.
         notes: Warnings raised while reading and calculating.
         elapsed: Calculation time, s.
     """
@@ -94,6 +117,7 @@ class ScatteringProfile:
     normalisation: str
     n_zero_contrast: int
     method: str
+    histogram_bin: float | None
     notes: tuple[str, ...]
     elapsed: float
     _params: dict = field(repr=False)
@@ -107,8 +131,14 @@ class ScatteringProfile:
 
     @property
     def params(self) -> dict[str, Any]:
-        """scale, background, sld_solvent (10⁻⁶ Å⁻²) and normalisation_volume, as set."""
+        """The calculator's parameters (``set_params``), as set."""
         return dict(self._params)
+
+    @property
+    def _kernel_text(self) -> str:
+        if self.histogram_bin is None:
+            return self.method
+        return f'{self.method} (bin {self.histogram_bin:.3g} Ang)'
 
     @property
     def structure_summary(self) -> dict[str, Any]:
@@ -124,7 +154,7 @@ class ScatteringProfile:
             f'scale={p["scale"]:g}, background={p["background"]:g} 1/cm, '
             f'sld_solvent={p["sld_solvent"]:g} 1e-6/Ang^2, '
             f'V_norm={self.normalisation_volume:.6g} Ang^3 ({self.normalisation}), '
-            f'kernel={self.method}'
+            f'kernel={self._kernel_text}'
         )
         if self.notes:
             text += '; notes: ' + ' | '.join(self.notes)
@@ -184,7 +214,7 @@ class ScatteringProfile:
                 f'{self.normalisation_volume:.6g} {CUBIC_ANGSTROM} ({self.normalisation}); '
                 f'{self.n_zero_contrast} zero-contrast points',
             ),
-            ('Kernel', f'{self.method}, {self.elapsed:.3g} s'),
+            ('Kernel', f'{self._kernel_text}, {self.elapsed:.3g} s'),
         ]
         rows.extend(('Note', note) for note in self.notes)
         return rows
@@ -209,7 +239,7 @@ class ScatteringProfile:
 
 
 class GenericScatteringCalculator:
-    """Orientationally averaged I(q) of a structure, by the exact Debye formula.
+    """Orientationally averaged I(q) of a structure, by the Debye formula.
 
     The nuclear, 1D part of SasView's Generic Scattering Calculator::
 
@@ -220,6 +250,12 @@ class GenericScatteringCalculator:
     ``V_norm`` is the volume of the points that scatter (``w != 0``) unless
     ``normalisation_volume`` is set. For space-filling pixels and cells,
     ``scale`` is then a volume fraction, as in sasmodels.
+
+    The ``kernel`` parameter picks how D(q) is summed; see ``set_params``. The
+    lattice, histogram and average kernels first build a distance spectrum
+    that does not depend on the solvent; the last one is kept, so a change of
+    ``sld_solvent``, ``scale``, ``background`` or ``normalisation_volume``
+    costs only the sums over q.
 
     Example:
         >>> gsc = GenericScatteringCalculator('particle.sld')
@@ -239,7 +275,11 @@ class GenericScatteringCalculator:
             'sld_solvent': 0.0,
             'normalisation_volume': 'auto',
             'deuterated': (),
+            'kernel': 'auto',
+            'histogram_bin': 'auto',
         }
+        # (structure, deuterated, kernel, active mask, bin, spectrum) of the last pair pass
+        self._cache: tuple | None = None
         if isinstance(structure, Structure):
             self.set_structure(structure)
         elif structure is not None:
@@ -283,6 +323,7 @@ class GenericScatteringCalculator:
         self._structure = structure
         self._params['normalisation_volume'] = 'auto'
         self._profile = None
+        self._cache = None
         for note in structure.notes:
             warnings.warn(f'{os.path.basename(structure.source)}: {note}', stacklevel=3)
         rg = structure.radius_of_gyration('sld', sld_solvent=self._params['sld_solvent'])
@@ -330,6 +371,8 @@ class GenericScatteringCalculator:
         sld_solvent=_UNSET,
         normalisation_volume=_UNSET,
         deuterated=_UNSET,
+        kernel=_UNSET,
+        histogram_bin=_UNSET,
     ) -> None:
         """Set any of the calculation parameters; the others are kept.
 
@@ -343,6 +386,16 @@ class GenericScatteringCalculator:
                 the points that scatter. SasView calls this field total_volume.
             deuterated: Residue names whose hydrogens count as D, applied with
                 ``Structure.deuterated`` at ``calculate()``; None or ``()`` for none.
+            kernel: How D(q) is summed. ``'auto'`` (the default): ``'lattice'``
+                for pixels on a lattice whose padded grid fits, else
+                ``'histogram'``. ``'lattice'``: FFT autocorrelation, exact.
+                ``'histogram'``: pairs counted by distance, exact to about
+                1e-4. ``'average'``: the squared orientation-averaged amplitude
+                about the bounding-box centre, exact only for spherically
+                symmetric structures, with time linear in the points.
+                ``'pairs'``: every pair at every q, exact to the last digit.
+            histogram_bin: Bin width of the histogram kernel, Å, or ``'auto'``
+                for ``min(0.01, 1e-3 / q_max)``.
         """
         new = dict(self._params)
         for name, value, lower in (('scale', scale, 0.0), ('background', background, 0.0)):
@@ -373,6 +426,17 @@ class GenericScatteringCalculator:
             new['deuterated'] = (
                 () if deuterated is None else tuple(residue_names(deuterated, 'deuterated'))
             )
+        if kernel is not _UNSET:
+            if kernel not in KERNELS:
+                raise ValueError(f'kernel must be one of {", ".join(KERNELS)}, got {kernel!r}.')
+            new['kernel'] = kernel
+        if histogram_bin is not _UNSET:
+            if histogram_bin != 'auto':
+                value = float(histogram_bin)
+                if not np.isfinite(value) or value <= 0:
+                    raise ValueError(f"histogram_bin must be > 0 or 'auto', got {value}.")
+                histogram_bin = value
+            new['histogram_bin'] = histogram_bin
         self._params = new
         self._profile = None
         logger.info(f'{OK} Parameters: {self._describe_params()}')
@@ -390,6 +454,9 @@ class GenericScatteringCalculator:
         )
         if p['deuterated']:
             text += f', deuterated {", ".join(p["deuterated"])}'
+        text += f', kernel {p["kernel"]}'
+        if p['histogram_bin'] != 'auto':
+            text += f' (bin {p["histogram_bin"]:g} {ANGSTROM})'
         return text
 
     # ------------------------------------------------------------ calculation
@@ -421,13 +488,15 @@ class GenericScatteringCalculator:
         p = self._params
         q = self._q
         notes = list(structure.notes)
+        sld = self._scattering_structure().sld
         rho = p['sld_solvent'] * 1e-6
-        contrast = self._scattering_structure().sld - rho
+        contrast = sld - rho
         weight = contrast * structure.volume
         active = weight != 0
         n_zero = int(np.sum(~active))
         explicit = p['normalisation_volume'] != 'auto'
         start = time.perf_counter()
+        bin_width = None
 
         if not active.any():
             self._warn(
@@ -441,8 +510,11 @@ class GenericScatteringCalculator:
             v_norm = (
                 p['normalisation_volume'] if explicit else float(structure.volume[active].sum())
             )
+            method = self._kernel(structure, active, p['kernel'])
             self._check(structure, contrast, active, notes)
-            method, debye = self._debye(structure, weight, active, progress, notes)
+            debye, bin_width = self._debye(
+                method, structure, sld, weight, active, p, progress, notes
+            )
             intensity = p['scale'] * 1e8 * debye / v_norm + p['background']
 
         summary = {
@@ -462,6 +534,7 @@ class GenericScatteringCalculator:
             normalisation='explicit' if explicit else 'active-volume',
             n_zero_contrast=n_zero,
             method=method,
+            histogram_bin=bin_width,
             notes=tuple(notes),
             elapsed=time.perf_counter() - start,
             _params=dict(p),
@@ -471,7 +544,7 @@ class GenericScatteringCalculator:
         logger.info(
             f'{OK} I(q) at {q.size} q values: {int(active.sum())} scattering points, '
             f'{n_zero} at zero contrast, V_norm {v_norm:.6g} {CUBIC_ANGSTROM} '
-            f'({profile.normalisation}), {method} kernel, {profile.elapsed:.3g} s'
+            f'({profile.normalisation}), {profile._kernel_text} kernel, {profile.elapsed:.3g} s'
         )
         return profile
 
@@ -522,32 +595,99 @@ class GenericScatteringCalculator:
                 'exchange either.',
             )
 
-    def _debye(self, structure, weight, active, progress, notes) -> tuple[str, np.ndarray]:
-        lattice = structure.lattice
-        if lattice is not None:
-            index = lattice.indices[active]
-            index = index - index.min(axis=0)
-            shape = tuple(index.max(axis=0) + 1)
-            if lattice_cells(shape) <= LATTICE_MAX_CELLS:
-                grid = np.zeros(shape)
-                np.add.at(grid, tuple(index.T), weight[active])
-                return 'lattice', debye_lattice(self._q, grid, lattice.step)
-        n = int(active.sum())
-        if n > LARGE_PAIR_LOOP:
-            self._warn(
-                notes,
-                f'{n} scattering points: the exact pair sum scales as N^2 and may take many '
-                'minutes.',
+    @staticmethod
+    def _lattice_index(structure: Structure, active) -> tuple[np.ndarray, tuple[int, ...]]:
+        """Lattice indices of the active points, from 0, and the grid shape they need."""
+        index = structure.lattice.indices[active]
+        index = index - index.min(axis=0)
+        return index, tuple(int(n) for n in index.max(axis=0) + 1)
+
+    def _kernel(self, structure: Structure, active, requested: str) -> str:
+        """The kernel *requested* resolves to for this structure."""
+        fits = (
+            structure.lattice is not None
+            and lattice_cells(self._lattice_index(structure, active)[1]) <= LATTICE_MAX_CELLS
+        )
+        if requested == 'auto':
+            return 'lattice' if fits else 'histogram'
+        if requested == 'lattice' and not fits:
+            raise ValueError(
+                "kernel='lattice' needs points on a lattice whose zero-padded grid has at most "
+                f'{LATTICE_MAX_CELLS} cells.'
             )
+        return requested
+
+    def _bin_width(self, params: dict[str, Any]) -> float:
+        """The histogram bin, Å: as set, or the largest that keeps the phase error small."""
+        if params['histogram_bin'] != 'auto':
+            return params['histogram_bin']
+        return min(HISTOGRAM_BIN_MAX, HISTOGRAM_PHASE / self._q[-1])
+
+    def _debye(self, kernel, structure, sld, weight, active, params, progress, notes):
+        """D(q) by *kernel*, and the histogram bin used (None for other kernels)."""
+        q = self._q
+        n = int(active.sum())
         last = [time.monotonic()]
 
         def report(fraction: float) -> bool | None:
             if time.monotonic() - last[0] > 5:
-                logger.info(f'  Debye sum {fraction:.0%} done')
+                logger.info(f'  {kernel} pass {fraction:.0%} done')
                 last[0] = time.monotonic()
             return progress(fraction) if progress is not None else None
 
-        return 'pairs', debye_pairs(self._q, structure.xyz[active], weight[active], progress=report)
+        if kernel == 'pairs':
+            if n > LARGE_PAIR_LOOP:
+                self._warn(
+                    notes,
+                    f'{n} scattering points: the exact pair sum scales as N^2 and may take many '
+                    "minutes; kernel='histogram' gives the same to about 1e-4 in a fraction of it.",
+                )
+            return debye_pairs(q, structure.xyz[active], weight[active], progress=report), None
+        if kernel == 'average':
+            notes.append(
+                '<A>^2 kernel: exact only for spherically symmetric structures; the result '
+                'depends on the centre.'
+            )
+        bin_width = self._bin_width(params) if kernel == 'histogram' else None
+        spectrum, bin_width = self._spectrum(
+            kernel, structure, sld, active, params['deuterated'], bin_width, report, notes
+        )
+        return spectrum.debye(q, params['sld_solvent'] * 1e-6), bin_width
+
+    def _spectrum(self, kernel, structure, sld, active, deuterated, bin_width, progress, notes):
+        """The distance spectrum of the active points: the cached one when it still applies.
+
+        A cached histogram with a finer bin than *bin_width* is reused.
+        """
+        if self._cache is not None:
+            c_structure, c_deuterated, c_kernel, c_active, c_bin, spectrum = self._cache
+            if (
+                c_structure is structure
+                and (c_deuterated, c_kernel) == (deuterated, kernel)
+                and np.array_equal(c_active, active)
+                and (bin_width is None or c_bin <= bin_width)
+            ):
+                return spectrum, c_bin
+        xyz, volume = structure.xyz[active], structure.volume[active]
+        b = sld[active] * volume
+        if kernel == 'lattice':
+            index, shape = self._lattice_index(structure, active)
+            grid_b, grid_v = np.zeros(shape), np.zeros(shape)
+            np.add.at(grid_b, tuple(index.T), b)
+            np.add.at(grid_v, tuple(index.T), volume)
+            spectrum = spectrum_lattice(grid_b, grid_v, structure.lattice.step)
+        elif kernel == 'histogram':
+            if xyz.shape[0] > LARGE_HISTOGRAM:
+                self._warn(
+                    notes,
+                    f'{xyz.shape[0]} scattering points: the histogram pass scales as N^2 and may '
+                    "take minutes; kernel='average' suits round aggregates.",
+                )
+            spectrum = spectrum_histogram(xyz, b, volume, bin_width, progress=progress)
+        else:
+            spectrum = spectrum_radial(xyz, b, volume, structure.centre)
+        self._cache = (structure, deuterated, kernel, active, bin_width, spectrum)
+        return spectrum, bin_width
 
     # ----------------------------------------------------------------- output
 
