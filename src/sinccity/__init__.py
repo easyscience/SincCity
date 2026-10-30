@@ -1,7 +1,7 @@
 """Generic Scattering Calculator: I(q) of a real-space structure.
 
 A notebook equivalent of the nuclear, 1D part of SasView's Generic Scattering
-Calculator: load a PDB, SLD or VTK file, compute the orientationally averaged
+Calculator: load a PDB, GRO, SLD or VTK file, compute the orientationally averaged
 I(q) by the exact Debye formula, and show the points and the curve. The
 result converts to a sasdata ``Data1D``, which is how it reaches a fit (for
 example ``IQuana.set_data``).
@@ -23,7 +23,7 @@ from ._console import set_verbosity
 from .calculator import GenericScatteringCalculator, ScatteringProfile
 from .debye import CalculationInterrupted
 from .model import RgResult, Structure, StructureError
-from .readers import load, read_pdb, read_sld, read_vtk
+from .readers import load, read_gro, read_pdb, read_sld, read_vtk
 
 __all__ = [
     'CalculationInterrupted',
@@ -33,6 +33,7 @@ __all__ = [
     'Structure',
     'StructureError',
     'load',
+    'read_gro',
     'read_pdb',
     'read_sld',
     'read_vtk',

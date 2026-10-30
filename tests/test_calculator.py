@@ -213,6 +213,18 @@ class TestCalculator:
         profile.save_csv(tmp_path / 'profile.csv')
         assert np.loadtxt(tmp_path / 'profile.csv', delimiter=',').shape == (20, 2)
 
+    def test_settings_keep_the_reader_options_of_an_installed_structure(self, tmp_path):
+        path = tmp_path / 'two.pdb'
+        path.write_text(
+            'ATOM      1  C   ALA A   1       0.000   0.000   0.000  1.00  0.00           C\n'
+            'HETATM    2 FE   HEM A   2       2.000   0.000   0.000  1.00  0.00          FE\n'
+        )
+        calc = quiet_calculator(sinccity.load(path, include_hetatm=True))
+        settings = json.loads(json.dumps(calc.get_settings()))
+        assert settings['reader_options'] == {'include_hetatm': True, 'residues': None}
+        replay = GenericScatteringCalculator.from_settings(settings)
+        assert replay.structure.n_points == 2
+
     def test_in_memory_settings_cannot_be_replayed(self):
         calc = quiet_calculator(sphere_pixels(radius=6.0))
         settings = calc.get_settings()

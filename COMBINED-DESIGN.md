@@ -244,7 +244,7 @@ was installed. SLD and VTK files ignore the residue options with a note.
 
 | Format | Today | Change |
 |---|---|---|
-| PDB | first MODEL; one altloc; waters dropped; HETATM opt-in; element column else SasView's name guess; CONECT bonds | residue name from columns 18–21 (`strip()` gives the same result for standard files); `resids`, `resnames`, `names` filled; the water list gains the MD names `SOL`, `TIP3`, `TIP3P`, `TIP4P`, `SPC`, `SPCE`, `OPC` (noted when something is dropped); residue pipeline (6.3) |
+| PDB | first MODEL; one altloc; waters dropped; HETATM opt-in; element column else SasView's name guess; CONECT bonds | residue name from columns 18–21 (`strip()` gives the same result for standard files); `resids`, `resnames`, `names` filled; the water list gains the MD names `SOL`, `TIP3`, `TIP4`, `SPC`, `SPCE`, `OPC` (four columns, so not `TIP3P` or `TIP4P`) (noted when something is dropped); residue pipeline (6.3) |
 | GRO | – | NEW `read_gro`: fixed columns (names may touch numbers), position width from the decimal points of the first atom (`gmx -ndec` files), nm to Å, box from the last line; velocities ignored. No water rule: a `.gro` of a solvated system needs `residues=`, and the reader says so in a note when it reads more than one residue name without a selection |
 | SLD, VTK | | unchanged |
 

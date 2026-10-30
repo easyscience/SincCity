@@ -1,5 +1,6 @@
 """The Generic Scattering Calculator: I(q) of a real-space structure."""
 
+import copy
 import html
 import os
 import time
@@ -238,7 +239,6 @@ class GenericScatteringCalculator:
             'sld_solvent': 0.0,
             'normalisation_volume': 'auto',
         }
-        self._reader_options: dict[str, Any] = {}
         if isinstance(structure, Structure):
             self.set_structure(structure)
         elif structure is not None:
@@ -261,21 +261,25 @@ class GenericScatteringCalculator:
 
     # ---------------------------------------------------------------- setters
 
-    def load_structure(self, path, *, include_hetatm: bool = False) -> Structure:
-        """Read a PDB, SLD or VTK file and make it the current structure."""
-        structure = load(path, include_hetatm=include_hetatm)
-        self._install(structure, {'include_hetatm': include_hetatm})
+    def load_structure(self, path, **reader_options: Any) -> Structure:
+        """Read a PDB, GRO, SLD or VTK file and make it the current structure.
+
+        Args:
+            path: The structure file.
+            **reader_options: As :func:`sinccity.load` takes them.
+        """
+        structure = load(path, **reader_options)
+        self._install(structure)
         return structure
 
     def set_structure(self, structure: Structure) -> None:
-        """Use an existing :class:`Structure`, for example one from ``Structure.from_arrays``."""
+        """Use an existing :class:`Structure`, for example one from ``sinccity.load``."""
         if not isinstance(structure, Structure):
             raise TypeError(f'Expected a Structure, got {type(structure).__name__}.')
-        self._install(structure, {})
+        self._install(structure)
 
-    def _install(self, structure: Structure, options: dict[str, Any]) -> None:
+    def _install(self, structure: Structure) -> None:
         self._structure = structure
-        self._reader_options = options
         self._params['normalisation_volume'] = 'auto'
         self._profile = None
         for note in structure.notes:
@@ -427,7 +431,7 @@ class GenericScatteringCalculator:
             'format': structure.format,
             'kind': structure.kind,
             'n_points': structure.n_points,
-            'reader_options': dict(self._reader_options),
+            'reader_options': copy.deepcopy(structure.reader_options),
             'notes': list(structure.notes),
         }
         profile = ScatteringProfile(
@@ -551,14 +555,20 @@ class GenericScatteringCalculator:
     # ------------------------------------------------------------ settings
 
     def get_settings(self) -> dict[str, Any]:
-        """A JSON-serialisable record of the source, grid, parameters and versions."""
+        """A JSON-serialisable record of the source, grid, parameters and versions.
+
+        A structure no reader made (``from_arrays``, or a copy derived from a
+        file) is recorded as ``'in-memory'``, which ``from_settings`` refuses;
+        a derived copy also records ``derived_from``, for information only.
+        """
         structure = self._require_structure()
-        return {
-            'source': structure.source,
+        replayable = structure.reader_options is not None
+        settings = {
+            'source': structure.source if replayable else 'in-memory',
             'basename': os.path.basename(structure.source),
             'source_sha256': structure.source_sha256,
-            'reader_options': dict(self._reader_options),
-            'q': self._q.tolist(),
+            'reader_options': copy.deepcopy(structure.reader_options),
+            'q':self._q.tolist(),
             'q_grid': dict(self._q_args) if self._q_args else None,
             'params': dict(self._params),
             'versions': {
@@ -566,6 +576,9 @@ class GenericScatteringCalculator:
                 **{name: _package_version(name) for name in ('numpy', 'periodictable')},
             },
         }
+        if not replayable and structure.source != 'in-memory':
+            settings['derived_from'] = structure.source
+        return settings
 
     @classmethod
     def from_settings(cls, settings: dict[str, Any]) -> 'GenericScatteringCalculator':
@@ -573,7 +586,9 @@ class GenericScatteringCalculator:
         if settings['source'] == 'in-memory':
             raise ValueError('These settings describe an in-memory structure; use set_structure().')
         calculator = cls()
-        structure = calculator.load_structure(settings['source'], **settings['reader_options'])
+        structure = calculator.load_structure(
+            settings['source'], **(settings.get('reader_options') or {})
+        )
         if structure.source_sha256 != settings['source_sha256']:
             warnings.warn(
                 f'{settings["source"]} has changed since the settings were saved.', stacklevel=2
