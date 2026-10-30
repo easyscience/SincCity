@@ -67,7 +67,8 @@ scattering volume. This calculator does not.
 **Deuteration.** `set_params(deuterated=['CTA'])` gives the hydrogens of
 these residue names the SLD of D at `calculate()`; volumes are unchanged,
 since D and H have the same natural atomic volume. It needs a structure with
-residue names (PDB, GRO or `Structure.from_atoms` with `resnames=`).
+residue names (PDB, GRO or `Structure.from_atoms` with `resnames=`); a name
+that is not in the structure, or whose atoms include no hydrogen, is an error.
 `structure.deuterated(['CTA'])` returns the same change as a new structure.
 
 ## File formats

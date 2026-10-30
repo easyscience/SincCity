@@ -18,7 +18,7 @@ from collections import Counter
 import numpy as np
 
 from .elements import guess_pdb, sld_volume
-from .model import Structure, StructureError, detect_lattice
+from .model import Structure, StructureError, detect_lattice, residue_names
 from .molecules import assign_elements, unwrap_box
 
 #: Residue names of water, which the PDB reader drops unless ``residues`` is given.
@@ -96,10 +96,8 @@ def _residue_options(residues, masses, elements, unwrap) -> dict:
     """The residue options of the PDB and GRO readers, checked and JSON-ready."""
     if unwrap not in (True, False, 'auto'):
         raise ValueError(f"unwrap must be True, False or 'auto', got {unwrap!r}.")
-    if isinstance(residues, str):
-        residues = [residues]
     return {
-        'residues': None if residues is None else [str(name) for name in residues],
+        'residues': None if residues is None else residue_names(residues, 'residues'),
         'masses': None
         if masses is None
         else {str(k): [float(m) for m in v] for k, v in masses.items()},

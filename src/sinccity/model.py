@@ -22,6 +22,23 @@ class StructureError(ValueError):
     """A structure file or array set cannot be used for a calculation."""
 
 
+def residue_names(names, option: str) -> list[str]:
+    """One residue name or an iterable of them, as a list.
+
+    Raises:
+        ValueError: If *names* is neither, naming the *option* it was given for.
+    """
+    if isinstance(names, str):
+        return [names]
+    try:
+        values = list(names)
+    except TypeError:
+        values = None
+    if values is None or not all(isinstance(name, str) for name in values):
+        raise ValueError(f'{option} must be residue names, got {names!r}.')
+    return [str(name) for name in values]
+
+
 def _owned(values: Any, dtype: Any = float) -> np.ndarray:
     """A read-only copy, so later edits to the caller's array cannot reach in."""
     array = np.array(values, dtype=dtype, copy=True)
@@ -237,18 +254,22 @@ class Structure:
 
         Raises:
             StructureError: If the structure has no residue names, or a name is
-                not in it.
+                not in it or has no hydrogens.
         """
         from .elements import constants
 
-        residues = [residues] if isinstance(residues, str) else list(residues)
+        residues = residue_names(residues, 'residues')
         if self.resnames is None or self.symbols is None:
             raise StructureError('Only atoms with residue names can be deuterated.')
         unknown = sorted(set(residues) - set(self.resnames.tolist()))
         if unknown:
             raise StructureError(f'Deuterated residues not in the structure: {", ".join(unknown)}.')
+        hydrogens = (self.symbols == 'H') & np.isin(self.resnames, residues)
+        without = sorted(set(residues) - set(self.resnames[hydrogens].tolist()))
+        if without:
+            raise StructureError(f'No hydrogens to deuterate in {", ".join(without)}.')
         sld = self.sld.copy()
-        sld[(self.symbols == 'H') & np.isin(self.resnames, residues)] = constants('D')[0]
+        sld[hydrogens] = constants('D')[0]
         return dataclasses.replace(self, sld=sld, reader_options=None)
 
     def with_symbols(self, symbols) -> 'Structure':

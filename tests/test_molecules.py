@@ -138,6 +138,9 @@ class TestDerivedStructures:
         assert np.array_equal(s.deuterated('SOL').sld[:4], s.sld[:4])
         with pytest.raises(StructureError, match='not in the structure: CTAB'):
             s.deuterated(['CTAB'])
+        ion = Structure.from_atoms([[0.0, 0, 0]], ['Br'], resids=[1], resnames=['BR'])
+        with pytest.raises(StructureError, match='No hydrogens to deuterate in BR'):
+            ion.deuterated('BR')
         pixels = Structure.from_arrays([[0.0, 0, 0]], [1e-6], [1.0])
         with pytest.raises(StructureError, match='residue names'):
             pixels.deuterated(['CTA'])
