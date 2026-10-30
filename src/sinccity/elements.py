@@ -78,19 +78,22 @@ def element_from_mass(masses) -> np.ndarray:
     symbols = np.array(list(MASS_TABLE))
     table = np.array(list(MASS_TABLE.values()))
     nearest = np.abs(masses[:, None] - table).argmin(axis=1)
-    far = np.abs(table[nearest] - masses) > MASS_TOLERANCE
+    far = ~(np.abs(table[nearest] - masses) <= MASS_TOLERANCE)  # NaN is far too
     if far.any():
         raise StructureError(f"The mass {masses[far][0]:g} u is no element's.")
     return symbols[nearest]
 
 
 def guess_pdb(line: str) -> str:
-    """SasView's guess of the element from the atom-name columns 13-16 of a PDB record."""
+    """SasView's guess of the element from the atom-name columns 13-16 of a PDB record.
+
+    Empty when the name is too short to guess from; the caller checks.
+    """
     name = line[12:16].strip()
     if line[12].isdigit():
-        return name[1]
+        return name[1:2]
     if len(name) == 4 or line[12] == ' ':
-        return name[0]
+        return name[:1]
     return name[:2]
 
 

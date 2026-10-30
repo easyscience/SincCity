@@ -102,7 +102,7 @@ the first source that has them:
    the likeliest to be wrong.
 
 Masses and element lists are matched by the atom's position in its residue
-(a run of atoms with one residue number), so the atom names of the structure
+(a run of atoms with one residue number and name), so the atom names of the structure
 and the topology may differ. `structure.element_sources` records the source
 per residue name. `structure.with_symbols(symbols)` returns a copy with
 corrected elements, and `Structure.from_atoms(xyz, symbols, resids=,
@@ -113,7 +113,8 @@ can split molecules and the aggregate. With `unwrap='auto'` (the default) a
 `.gro` file is unwrapped: each molecule is made whole around its first atom,
 then moved by whole box lengths next to the aggregate's centre, the circular
 mean of the molecule centres. A note counts the atoms moved. It works for one
-aggregate smaller than half the box. PDB files are unwrapped only with
+aggregate smaller than half the box. A `.gro` file whose box is zero (no
+periodic box) is read as it is, with a note. PDB files are unwrapped only with
 `unwrap=True`, because many programs write a placeholder `CRYST1`; a missing
 or placeholder box is then an error. Triclinic boxes cannot be unwrapped
 (`unwrap=False` reads such files without the box).

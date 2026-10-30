@@ -337,7 +337,7 @@ class Structure:
         if self.resids is not None:
             from .molecules import residue_runs
 
-            info['n_residues'] = int(residue_runs(self.resids)[0].size)
+            info['n_residues'] = int(residue_runs(self.resids, self.resnames)[0].size)
             info['residue_atoms'] = dict(sorted(Counter(self.resnames.tolist()).items()))
         if self.element_sources:
             info['element_sources'] = dict(self.element_sources)

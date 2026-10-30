@@ -1,7 +1,7 @@
 """Residue-level steps shared by the PDB and GRO readers and by :class:`Structure`.
 
 Unwrapping and element assignment follow coords2sans. A residue (a molecule)
-is a run of atoms with one residue number.
+is a run of atoms with one residue number and name.
 """
 
 from collections.abc import Mapping, Sequence
@@ -12,14 +12,17 @@ from .elements import MASS_TABLE, element_from_mass, guess_stem
 from .model import StructureError
 
 
-def residue_runs(resids: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """First index and atom count of each residue: a run of atoms with one residue number."""
-    resids = np.asarray(resids)
-    starts = np.flatnonzero(np.r_[True, resids[1:] != resids[:-1]])
+def residue_runs(resids: np.ndarray, resnames: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """First index and atom count of each residue: a run of atoms with one number and name."""
+    resids, resnames = np.asarray(resids), np.asarray(resnames)
+    changed = (resids[1:] != resids[:-1]) | (resnames[1:] != resnames[:-1])
+    starts = np.flatnonzero(np.r_[True, changed])
     return starts, np.diff(np.r_[starts, resids.size])
 
 
-def unwrap_box(resids: np.ndarray, xyz: np.ndarray, box) -> tuple[np.ndarray, int]:
+def unwrap_box(
+    resids: np.ndarray, resnames: np.ndarray, xyz: np.ndarray, box
+) -> tuple[np.ndarray, int]:
     """Put an aggregate back together across the faces of its periodic box.
 
     GROMACS writes every position back inside the box, which can split
@@ -33,7 +36,7 @@ def unwrap_box(resids: np.ndarray, xyz: np.ndarray, box) -> tuple[np.ndarray, in
         The positions, and the number of atoms that moved.
     """
     box = np.asarray(box, dtype=float)
-    starts, sizes = residue_runs(resids)
+    starts, sizes = residue_runs(resids, resnames)
     first = np.repeat(xyz[starts], sizes, axis=0)
     images = np.round((xyz - first) / box)
     whole = xyz - box * images
@@ -71,7 +74,7 @@ def assign_elements(
         StructureError: If a residue has another number of atoms than its
             list, a mass is no element's, or a guess is no element.
     """
-    starts, sizes = residue_runs(resids)
+    starts, sizes = residue_runs(resids, resnames)
     position = np.arange(len(resids)) - np.repeat(starts, sizes)
     size = np.repeat(sizes, sizes)
     hint = 'pass masses= or elements= for it'
@@ -100,10 +103,13 @@ def assign_elements(
                 guessed = [guess_stem(n, s == 1) for n, s in zip(names[atoms], size[atoms])]
             else:
                 guessed = guesses[atoms]
-            unknown = sorted({n for n, g in zip(names[atoms], guessed) if g not in MASS_TABLE})
+            unknown = sorted(
+                {n for n, g in zip(names[atoms].tolist(), guessed) if g not in MASS_TABLE}
+            )
             if unknown:
                 raise StructureError(
-                    f'No element for atom names of {resname} ({", ".join(unknown)}); {hint}.'
+                    f'No element for atom names of {resname} ({", ".join(map(repr, unknown))}); '
+                    f'{hint}.'
                 )
             symbols[atoms], sources[resname] = guessed, 'names'
 

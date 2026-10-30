@@ -114,11 +114,13 @@ def _periodic(path, lengths, triclinic: bool, unwrap, default: bool, notes: list
     """The box to store, and whether to unwrap across it."""
     wanted = default if unwrap == 'auto' else unwrap
     if lengths is None:
-        if wanted:
+        if unwrap is True:
             raise StructureError(
-                f'{path}: unwrap=True needs a periodic box; the file declares none, or the '
-                '1 Ang placeholder.'
+                f'{path}: unwrap=True needs a periodic box; the file declares none, or a '
+                'placeholder with a side of 1 Ang or less.'
             )
+        if wanted:
+            notes.append('The file declares no periodic box, so nothing is unwrapped.')
         return None, False
     if triclinic:
         if wanted:
@@ -152,7 +154,7 @@ def _atoms(
     resids, resnames, names = np.asarray(resids), np.asarray(resnames), np.asarray(names)
     try:
         if unwrap:
-            xyz, moved = unwrap_box(resids, xyz, box)
+            xyz, moved = unwrap_box(resids, resnames, xyz, box)
             if moved:
                 notes.append(
                     f'Unwrapped the aggregate across the periodic box: moved {moved} atoms.'
@@ -418,7 +420,8 @@ def read_gro(path, *, residues=None, masses=None, elements=None, unwrap='auto') 
             raise StructureError(f'{path} holds no atom of the residues {", ".join(residues)}.')
         resids, resnames, names, xyz = resids[kept], resnames[kept], names[kept], xyz[kept]
 
-    box, wanted = _periodic(path, box[:3], any(box[3:]), unwrap, True, notes)
+    lengths = box[:3] if min(box[:3]) > 1.0 else None  # GROMACS writes zeros for no box
+    box, wanted = _periodic(path, lengths, any(box[3:]), unwrap, True, notes)
     return _atoms(
         path,
         sha,
