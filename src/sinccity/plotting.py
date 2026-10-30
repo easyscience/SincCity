@@ -196,7 +196,7 @@ def plot_profile(
     measured overlay is usually resolution-smeared while the profile is not.
     """
     q, intensity = profile.q, profile.intensity
-    name = f'GSC {profile.structure_summary["basename"]}'
+    name = f'GSC {profile.label}'
     if log_scale and not np.any(intensity > 0):
         log_scale = False  # nothing to draw on log axes, e.g. a zero background
     drawn = intensity > 0 if log_scale else np.ones(q.size, dtype=bool)

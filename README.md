@@ -31,7 +31,7 @@ names the extra.
 from sinccity import GenericScatteringCalculator
 
 gsc = GenericScatteringCalculator()
-gsc.load_structure('particle.sld')  # .pdb, .sld or .vtk
+gsc.load_structure('particle.sld')  # .pdb, .gro, .sld or .vtk
 gsc.plot_points()  # SasView's "Draw Points", in 3D
 gsc.set_q_grid(3e-4, 0.3, 30)  # optional: SasView's defaults
 gsc.set_params(sld_solvent=6.34)  # optional: 10^-6 Å^-2, D2O here
@@ -39,6 +39,22 @@ profile = gsc.calculate()
 profile.describe()
 gsc.plot_profile()  # or gsc.plot_profile(data=some_data1d)
 data = profile.to_data1d()  # a sasdata Data1D, ready for a fit
+```
+
+An aggregate from a molecular-dynamics run, in several contrasts:
+
+```python
+gsc.load_structure(
+    'CTA178-eq5.gro',
+    residues=['CTA'],  # the micelle, not its solvent
+    masses={'CTA': cta_masses},  # from the topology, in atom order
+)
+gsc.set_params(scale=0.01, size_pd=0.1)
+profiles = gsc.calculate_series([
+    {'label': 'h-CTA in D2O', 'params': {'sld_solvent': 6.36}},
+    {'label': 'h-CTA in H2O', 'params': {'sld_solvent': -0.56}},
+    {'label': 'd-CTA in H2O', 'params': {'sld_solvent': -0.56, 'deuterated': ['CTA']}},
+])
 ```
 
 The calculation is the Debye sum over all points:
@@ -71,7 +87,8 @@ factors at or below 0 dropped, each weighted by the Gaussian's height there.
 A factor f stretches every distance by f and every amplitude by f³, so
 
 ```text
-I(q) = scale * 1e8 * Σ n_f f⁶ D(f q) / (Σ n_f f³ V_norm) + background
+I(q)   = scale * 1e8 * Σ n_f f⁶ D(f q) / V_norm + background
+V_norm = Σ n_f f³ V                     V: the volume of the points that scatter
 ```
 
 with the shares n_f adding up to 1, so `scale` stays a volume fraction. The
@@ -191,11 +208,53 @@ coords2sans.
   should state its weighting and resolution explicitly; pass
   `to_data1d(dI=...)` to attach uncertainties.
 - **Reproducibility.** `gsc.get_settings()` records the file path and
-  SHA-256, the q grid, the parameters and the periodictable version.
-  `GenericScatteringCalculator.from_settings(settings)` rebuilds the
-  calculator and warns if the file or the version changed.
+  SHA-256, the reader options, the q grid, every parameter and the package
+  versions. `GenericScatteringCalculator.from_settings(settings)` rebuilds
+  the calculator and warns if the file or the periodictable version changed;
+  records of version 0.1 replay with the new parameters at their defaults,
+  except the kernel: `'auto'` for pixels on a lattice and otherwise
+  `'pairs'`, the pair sum 0.1 used, so a record gives the curve it was
+  made with.
+  A structure no file and options can rebuild (`from_arrays`, `from_atoms`,
+  or a `deuterated` / `with_symbols` copy) is recorded as `'in-memory'`, which
+  `from_settings` refuses; a derived copy also records `derived_from`.
+- **Series and worker processes.** `gsc.calculate_series(series)` computes
+  one profile per entry, each a `label` and `set_params` keys that apply to
+  that entry only. All entries are checked before anything runs, entries
+  that share a deuteration state and kernel share one pair pass, and the
+  profiles come back in the order given, each with its `label`. The
+  parameters are left as they were. A settings record plus a series is plain
+  JSON, so another process can run it:
+  `GenericScatteringCalculator.from_settings(settings).calculate_series(series)`.
+  Call `sinccity.set_verbosity('quiet')` there; the logger is per process.
 - **Console output.** Progress lines go through the `sinccity` logger;
   `sinccity.set_verbosity('quiet')` silences them.
+
+## Coming from coords2sans
+
+`sinccity` takes over coords2sans's features; its names and units differ in
+places.
+
+| coords2sans | sinccity |
+|---|---|
+| `Structure.read(path, residues, masses, elements)` | `sinccity.load(path, residues=, masses=, elements=)` or `gsc.load_structure(...)` |
+| `Structure(resids, resnames, names, positions, elements)` | `Structure.from_atoms(xyz, symbols, resids=, resnames=, names=)` |
+| `structure.positions`, `structure.elements` (editable) | `structure.xyz`, `structure.symbols`; `structure.with_symbols(new)` |
+| `structure.sld(deuterated=[...])` | `structure.deuterated([...]).sld`, or `set_params(deuterated=[...])` |
+| `SansCalculator(solvent_sld=6.36e-6)` | `set_params(sld_solvent=6.36)`, in 10⁻⁶ Å⁻² |
+| `q_min`, `q_max`, `q_points`, `q_log` | `set_q_grid(qmin, qmax, npoints, spacing='log' or 'linear')`; the default grid is SasView's, 3e-4 to 0.3 Å⁻¹ in 30 points |
+| `polydispersity`, `size_points`, `SIZE_RANGE` | `size_pd`, `size_pd_n`, `size_pd_nsigma` |
+| `average_amplitude=True` | `kernel='average'` |
+| `BIN_WIDTH` (0.01 Å) | `histogram_bin`, by default at most 0.01 Å and smaller at high q or with a size spread |
+| `calculate(structure, label)` → `Curve` | `set_structure(structure)`, then `calculate(label=)` → `ScatteringProfile` |
+| `Curve.save`, `Curve.plot(ax)` | `profile.save_csv(path)` (the same two columns); `ax.plot(profile.q, profile.intensity)` or `profile.plot()` (plotly) |
+| `SansTask` | `get_settings()` plus a series, run by `from_settings(settings).calculate_series(series)` |
+
+Two rules differ on purpose. PDB files without an element column use
+SasView's name rule (` CA ` is carbon), and in `.gro` files a two-letter
+element name counts only in a one-atom residue (so `CA` in a protein is
+carbon). V_norm is the volume of the atoms that scatter, which equals
+coords2sans's volume of all atoms unless an atom matches the solvent.
 
 ## Tests
 
