@@ -189,9 +189,9 @@ class Structure:
         """Atomic masses in g/mol (atoms only)."""
         if self.symbols is None:
             raise StructureError('Masses are only defined for atomic structures.')
-        from periodictable import elements
+        from .elements import constants
 
-        return np.array([elements.symbol(s).mass for s in self.symbols])
+        return np.array([constants(s)[2] for s in self.symbols])
 
     def radius_of_gyration(self, weights: str = 'sld', *, sld_solvent: float = 0.0) -> RgResult:
         """Radius of gyration, as a diagnostic that never raises.
@@ -289,7 +289,7 @@ class Structure:
         return f'<Structure {self.kind}: {self.n_points} points from {self.source}>'
 
     def plot_points(self, **kwargs: Any):
-        """Draw the points in 3D; see :func:`gsc.plotting.plot_points`."""
+        """Draw the points in 3D; see :func:`sinccity.plotting.plot_points`."""
         from .plotting import plot_points
 
         return plot_points(self, **kwargs)

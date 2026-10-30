@@ -1,11 +1,19 @@
-"""Plotly views of a structure (SasView's *Draw Points*) and of a computed profile."""
+"""Plotly views of a structure (SasView's *Draw Points*) and of a computed profile.
+
+plotly is an optional dependency (``pip install sinccity[plot]``); this module
+is imported only when a plot is drawn.
+"""
 
 import os
 from typing import Any
 
 import numpy as np
-import plotly.graph_objects as go
-from plotly.colors import qualitative
+
+try:
+    import plotly.graph_objects as go
+    from plotly.colors import qualitative
+except ImportError as exc:
+    raise ImportError('Plots need plotly: pip install sinccity[plot]') from exc
 
 #: SasView's Draw Points colours; other elements cycle through a qualitative palette.
 ELEMENT_COLOURS = {
@@ -89,7 +97,7 @@ def plot_points(
     """Draw a structure's points in 3D, with equal length scales on every axis.
 
     Args:
-        structure: A :class:`~gsc.Structure`.
+        structure: A :class:`~sinccity.Structure`.
         color: ``'element'`` (atoms), ``'sld'``, or ``'auto'``: element for
             atoms, SLD otherwise.
         sld_solvent: Solvent SLD, 10⁻⁶ Å⁻². In SLD colouring, points that

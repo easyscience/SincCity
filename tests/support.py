@@ -1,4 +1,4 @@
-"""Helpers shared by the gsc tests."""
+"""Helpers shared by the sinccity tests."""
 
 import os
 import warnings

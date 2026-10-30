@@ -1,8 +1,6 @@
 # Test structure files
 
-Used by the tests in `gsc/tests/`. The same files sit in `examples/data/` at
-the repository root for the SANS-fitter example script and notebook; the copies
-here keep the `gsc` package's tests self-contained.
+Used by the tests in `tests/`.
 
 | File | Content | Origin |
 |---|---|---|

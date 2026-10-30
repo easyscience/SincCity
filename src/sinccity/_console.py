@@ -1,11 +1,11 @@
 """Console output: the package logger and encoding-safe glyphs.
 
 Status messages that are a side effect of a call (structure loaded, q grid
-set, profile computed) go through ``logging.getLogger('gsc')`` instead of
+set, profile computed) go through ``logging.getLogger('sinccity')`` instead of
 ``print``, so a caller can turn them off::
 
-    import sinccity as gsc
-    gsc.set_verbosity('quiet')
+    import sinccity
+    sinccity.set_verbosity('quiet')
 
 The logger owns a stdout handler and does not propagate, so by default the
 messages simply appear and do not duplicate into an application's own logging

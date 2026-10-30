@@ -14,13 +14,18 @@ authors = [
 readme = "README.md"
 dependencies = [
     "numpy>=2.0",
-    "plotly>=5.0",
     "periodictable>=1.6",
-    "sasdata>=0.8",
 ]
 
 [project.optional-dependencies]
+plot = [
+    "plotly>=5.0",
+]
+sasdata = [
+    "sasdata>=0.8",
+]
 dev = [
+    "sinccity[plot,sasdata]",
     "pytest>=7.0",
 ]
 

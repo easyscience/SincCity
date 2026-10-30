@@ -14,12 +14,15 @@ consumer) accepts.
 ## Installation
 
 ```bash
-pip install -e sinccity
+pip install -e .                  # numpy and periodictable only
+pip install -e ".[plot,sasdata]"  # plus plotly (plots) and sasdata (Data1D output)
 ```
 
-The pixi environment of the repository installs it automatically. The
-dependencies are `numpy`, `plotly`, `periodictable` (scattering lengths and
-densities for PDB atoms) and `sasdata` (the `Data1D` output).
+The required dependencies are `numpy` and `periodictable` (scattering lengths
+and densities of atoms). Two extras are optional: `plot` installs `plotly`,
+which `plot_points` and `plot_profile` need, and `sasdata` installs `sasdata`,
+which `to_data1d` needs. Without them those calls raise an `ImportError` that
+names the extra.
 
 ## Usage
 
@@ -101,13 +104,8 @@ pyramids are wrong.
   SHA-256, the q grid, the parameters and the periodictable version.
   `GenericScatteringCalculator.from_settings(settings)` rebuilds the
   calculator and warns if the file or the version changed.
-- **Console output.** Progress lines go through the `gsc` logger;
-  `gsc.set_verbosity('quiet')` silences them.
-
-The SANS-fitter user guide has a worked example of fitting a computed curve,
-and `examples/structure_calculator_example.py` and
-`notebooks/structure_calculator.ipynb` in that repository are complete
-walkthroughs.
+- **Console output.** Progress lines go through the `sinccity` logger;
+  `sinccity.set_verbosity('quiet')` silences them.
 
 ## Tests
 
