@@ -21,6 +21,7 @@ from .debye import (
     spectrum_lattice,
     spectrum_radial,
 )
+from .dispersion import gaussian_sizes
 from .elements import AVOGADRO
 from .model import PROTEIN_SPECIFIC_VOLUME, Structure, StructureError, residue_names
 from .readers import load
@@ -41,8 +42,8 @@ KERNELS = ('auto', 'lattice', 'histogram', 'average', 'pairs')
 #: The largest histogram bin, Å (coords2sans's, validated to 1e-4 up to q = 0.2 1/Å).
 HISTOGRAM_BIN_MAX = 0.01
 
-#: Largest phase error the automatic bin allows at q_max, rad; rounding moves a
-#: pair by at most half a bin, so the bin is 1e-3 / q_max.
+#: Largest phase error the automatic bin allows at f_max * q_max, rad; rounding
+#: moves a pair by at most half a bin, so the bin is 1e-3 / (q_max f_max).
 HISTOGRAM_PHASE = 1e-3
 
 #: A population is "near-matched" when its contrast is this small relative to the largest.
@@ -107,6 +108,7 @@ class ScatteringProfile:
         method: Kernel used: ``'lattice'``, ``'histogram'``, ``'average'``,
             ``'pairs'``, or ``'none'`` when nothing scatters.
         histogram_bin: The histogram bin used, Å; None for other kernels.
+        n_sizes: Number of size factors summed (1 without polydispersity).
         notes: Warnings raised while reading and calculating.
         elapsed: Calculation time, s.
     """
@@ -118,6 +120,7 @@ class ScatteringProfile:
     n_zero_contrast: int
     method: str
     histogram_bin: float | None
+    n_sizes: int
     notes: tuple[str, ...]
     elapsed: float
     _params: dict = field(repr=False)
@@ -156,6 +159,11 @@ class ScatteringProfile:
             f'V_norm={self.normalisation_volume:.6g} Ang^3 ({self.normalisation}), '
             f'kernel={self._kernel_text}'
         )
+        if self.n_sizes > 1:
+            text += (
+                f', size_pd={p["size_pd"]:g} over {self.n_sizes} sizes '
+                f'(nsigma {p["size_pd_nsigma"]:g})'
+            )
         if self.notes:
             text += '; notes: ' + ' | '.join(self.notes)
         return text.encode('ascii', 'replace').decode('ascii')
@@ -216,6 +224,13 @@ class ScatteringProfile:
             ),
             ('Kernel', f'{self._kernel_text}, {self.elapsed:.3g} s'),
         ]
+        if self.n_sizes > 1:
+            rows.append(
+                (
+                    'Sizes',
+                    f'size_pd {p["size_pd"]:g}, {self.n_sizes} sizes, nsigma {p["size_pd_nsigma"]:g}',
+                )
+            )
         rows.extend(('Note', note) for note in self.notes)
         return rows
 
@@ -277,6 +292,9 @@ class GenericScatteringCalculator:
             'deuterated': (),
             'kernel': 'auto',
             'histogram_bin': 'auto',
+            'size_pd': 0.0,
+            'size_pd_n': 35,
+            'size_pd_nsigma': 3.0,
         }
         # (structure, deuterated, kernel, active mask, bin, spectrum) of the last pair pass
         self._cache: tuple | None = None
@@ -373,6 +391,9 @@ class GenericScatteringCalculator:
         deuterated=_UNSET,
         kernel=_UNSET,
         histogram_bin=_UNSET,
+        size_pd=_UNSET,
+        size_pd_n=_UNSET,
+        size_pd_nsigma=_UNSET,
     ) -> None:
         """Set any of the calculation parameters; the others are kept.
 
@@ -395,7 +416,12 @@ class GenericScatteringCalculator:
                 symmetric structures, with time linear in the points.
                 ``'pairs'``: every pair at every q, exact to the last digit.
             histogram_bin: Bin width of the histogram kernel, Å, or ``'auto'``
-                for ``min(0.01, 1e-3 / q_max)``.
+                for ``min(0.01, 1e-3 / (q_max * f_max))``, f_max the largest
+                size factor.
+            size_pd: Relative standard deviation of the size of the whole
+                structure (a Gaussian, as sasmodels' ``radius_pd``); 0 is one size.
+            size_pd_n: Number of sizes, >= 1.
+            size_pd_nsigma: Half-range of the sizes in standard deviations, > 0.
         """
         new = dict(self._params)
         for name, value, lower in (('scale', scale, 0.0), ('background', background, 0.0)):
@@ -437,6 +463,20 @@ class GenericScatteringCalculator:
                     raise ValueError(f"histogram_bin must be > 0 or 'auto', got {value}.")
                 histogram_bin = value
             new['histogram_bin'] = histogram_bin
+        if size_pd is not _UNSET:
+            value = float(size_pd)
+            if not np.isfinite(value) or value < 0:
+                raise ValueError(f'size_pd must be finite and >= 0, got {value}.')
+            new['size_pd'] = value
+        if size_pd_n is not _UNSET:
+            if int(size_pd_n) != size_pd_n or size_pd_n < 1:
+                raise ValueError(f'size_pd_n must be an integer of at least 1, got {size_pd_n!r}.')
+            new['size_pd_n'] = int(size_pd_n)
+        if size_pd_nsigma is not _UNSET:
+            value = float(size_pd_nsigma)
+            if not np.isfinite(value) or value <= 0:
+                raise ValueError(f'size_pd_nsigma must be finite and > 0, got {value}.')
+            new['size_pd_nsigma'] = value
         self._params = new
         self._profile = None
         logger.info(f'{OK} Parameters: {self._describe_params()}')
@@ -457,6 +497,11 @@ class GenericScatteringCalculator:
         text += f', kernel {p["kernel"]}'
         if p['histogram_bin'] != 'auto':
             text += f' (bin {p["histogram_bin"]:g} {ANGSTROM})'
+        if p['size_pd'] > 0:
+            text += (
+                f', size_pd {p["size_pd"]:g} ({p["size_pd_n"]} sizes, '
+                f'nsigma {p["size_pd_nsigma"]:g})'
+            )
         return text
 
     # ------------------------------------------------------------ calculation
@@ -496,6 +541,7 @@ class GenericScatteringCalculator:
         explicit = p['normalisation_volume'] != 'auto'
         start = time.perf_counter()
         bin_width = None
+        factors, shares = self._sizes()
 
         if not active.any():
             self._warn(
@@ -506,11 +552,11 @@ class GenericScatteringCalculator:
             v_norm = p['normalisation_volume'] if explicit else float('nan')
             method = 'none'
         else:
-            v_norm = (
-                p['normalisation_volume'] if explicit else float(structure.volume[active].sum())
-            )
+            # the shares' mean volume, as sasmodels normalises a size distribution
+            mean_volume = float(np.sum(shares * factors**3) * structure.volume[active].sum())
+            v_norm = p['normalisation_volume'] if explicit else mean_volume
             method = self._kernel(structure, active, p['kernel'])
-            self._check(structure, contrast, active, notes)
+            self._check(structure, contrast, active, factors.max(), notes)
             debye, bin_width = self._debye(method, structure, sld, active, progress, notes)
             intensity = p['scale'] * 1e8 * debye / v_norm + p['background']
 
@@ -532,6 +578,7 @@ class GenericScatteringCalculator:
             n_zero_contrast=n_zero,
             method=method,
             histogram_bin=bin_width,
+            n_sizes=int(factors.size),
             notes=tuple(notes),
             elapsed=time.perf_counter() - start,
             _params=dict(p),
@@ -550,7 +597,7 @@ class GenericScatteringCalculator:
         warnings.warn(text, stacklevel=4)
         notes.append(text)
 
-    def _check(self, structure: Structure, contrast, active, notes: list[str]) -> None:
+    def _check(self, structure: Structure, contrast, active, f_max, notes: list[str]) -> None:
         """Warnings that change how the curve should be read."""
         largest = np.abs(contrast).max()
         near = active & (np.abs(contrast) <= NEAR_MATCH * largest)
@@ -570,12 +617,14 @@ class GenericScatteringCalculator:
                 size = float(np.cbrt(structure.volume.max()))
         elif structure.kind == 'cells':
             size = float(structure.cell_diameter.max() / np.sqrt(3))
-        if size and self._q[-1] * size > CELL_SIZE_LIMIT:
+        q_max = self._q[-1] * f_max  # the largest size samples the spectrum furthest out
+        if size and q_max * size > CELL_SIZE_LIMIT:
             self._warn(
                 notes,
-                f'q_max * cell size = {self._q[-1] * size:.3g} > {CELL_SIZE_LIMIT:g} (cell size '
-                f'{size:.4g} Ang): treating each {structure.kind[:-1]} as a point degrades above '
-                f'q = {CELL_SIZE_LIMIT / size:.4g} 1/Ang.',
+                f'q_max * cell size = {q_max * size:.3g} > {CELL_SIZE_LIMIT:g} (cell size '
+                f'{size:.4g} Ang, largest size factor {f_max:.3g}): treating each '
+                f'{structure.kind[:-1]} as a point degrades above q = '
+                f'{CELL_SIZE_LIMIT / size:.4g} 1/Ang.',
             )
 
         if structure.kind == 'atoms' and self._params['sld_solvent'] != 0:
@@ -614,20 +663,31 @@ class GenericScatteringCalculator:
             )
         return requested
 
+    def _sizes(self) -> tuple[np.ndarray, np.ndarray]:
+        """The size factors and their shares, from the ``size_pd`` parameters."""
+        p = self._params
+        return gaussian_sizes(p['size_pd'], p['size_pd_n'], p['size_pd_nsigma'])
+
     def _bin_width(self) -> float:
         """The histogram bin, Å: as set, or the largest that keeps the phase error small."""
         if self._params['histogram_bin'] != 'auto':
             return self._params['histogram_bin']
-        return min(HISTOGRAM_BIN_MAX, HISTOGRAM_PHASE / self._q[-1])
+        return min(HISTOGRAM_BIN_MAX, HISTOGRAM_PHASE / (self._q[-1] * self._sizes()[0].max()))
 
     def _debye(self, kernel, structure, sld, active, progress, notes):
-        """D(q) of the *active* points with SLDs *sld*, and the histogram bin used.
+        """D(q) of the *active* points with SLDs *sld*, summed over the sizes.
 
-        The bin is None for kernels other than the histogram.
+        A size f contributes ``share * f^6 * D(f q)``. Also returns the
+        histogram bin used, None for the other kernels.
         """
         q = self._q
         rho = self._params['sld_solvent'] * 1e-6
         n = int(active.sum())
+        factors, shares = self._sizes()
+
+        def over_sizes(one) -> np.ndarray:
+            return sum(s * f**6 * one(i, f) for i, (f, s) in enumerate(zip(factors, shares)))
+
         last = [time.monotonic()]
 
         def report(fraction: float) -> bool | None:
@@ -643,15 +703,26 @@ class GenericScatteringCalculator:
                     f'{n} scattering points: the exact pair sum scales as N^2 and may take many '
                     "minutes; kernel='histogram' gives the same to about 1e-4 in a fraction of it.",
                 )
+            if factors.size > 1:
+                self._warn(
+                    notes,
+                    f"kernel='pairs' repeats the whole pair sum for each of the {factors.size} "
+                    "sizes; kernel='histogram' does the same in a fraction of the time.",
+                )
+            xyz = structure.xyz[active]
             weight = (sld[active] - rho) * structure.volume[active]
-            return debye_pairs(q, structure.xyz[active], weight, progress=report), None
+            return over_sizes(
+                lambda i, f: debye_pairs(
+                    f * q, xyz, weight, progress=lambda x: report((i + x) / factors.size)
+                )
+            ), None
         if kernel == 'average':
             notes.append(
                 '<A>^2 kernel: exact only for spherically symmetric structures; the result '
                 'depends on the centre.'
             )
         spectrum, bin_width = self._spectrum(kernel, structure, sld, active, report, notes)
-        return spectrum.debye(q, rho), bin_width
+        return over_sizes(lambda i, f: spectrum.debye(f * q, rho)), bin_width
 
     def _spectrum(self, kernel, structure, sld, active, progress, notes):
         """The distance spectrum of the *active* points, and the histogram bin it has.

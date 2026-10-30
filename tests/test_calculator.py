@@ -15,6 +15,7 @@ import sinccity
 from sinccity import CalculationInterrupted, GenericScatteringCalculator, Structure, StructureError
 from sinccity.debye import debye_pairs
 from sinccity.elements import constants
+from sinccity.dispersion import gaussian_sizes
 
 # ============================================================================
 # Normalisation and warnings
@@ -209,6 +210,81 @@ class TestKernels:
         calls.clear()
         calc.calculate(progress=counting(calls))
         assert calls == []  # 'auto' and 'histogram' resolve to the same kernel
+
+
+# ============================================================================
+# Size polydispersity
+# ============================================================================
+
+
+class TestSizes:
+    """Two atoms d apart: D(q) = w1^2 + w2^2 + 2 w1 w2 sinc(q d)."""
+
+    xyz = np.array([[0.0, 0, 0], [0, 0, 7.3]])
+
+    def closed_form(self, q, w, factors, shares, volume, scale=1.0, background=0.0):
+        d = np.linalg.norm(self.xyz[1] - self.xyz[0])
+        debye = sum(
+            s * f**6 * ((w**2).sum() + 2 * w[0] * w[1] * np.sinc(f * q * d / np.pi))
+            for f, s in zip(factors, shares)
+        )
+        return scale * 1e8 * debye / (np.sum(shares * factors**3) * volume) + background
+
+    @pytest.mark.parametrize('kernel, rtol', [('pairs', 1e-12), ('histogram', 1e-4)])
+    def test_sizes_scale_distances_and_volumes(self, kernel, rtol):
+        structure = Structure.from_atoms(self.xyz, ['C', 'O'])
+        calc = quiet_calculator(structure, qmax=0.5)
+        calc.set_params(kernel=kernel, size_pd=0.15, size_pd_n=11, scale=0.3, background=0.2)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')  # pairs over sizes warns
+            profile = calc.calculate()
+        factors, shares = gaussian_sizes(0.15, 11, 3.0)
+        w = structure.sld * structure.volume
+        expected = self.closed_form(calc.q, w, factors, shares, structure.volume.sum(), 0.3, 0.2)
+        assert profile.n_sizes == 11
+        assert profile.normalisation_volume == pytest.approx(
+            np.sum(shares * factors**3) * structure.volume.sum()
+        )
+        assert np.allclose(profile.intensity, expected, rtol=rtol, atol=0)
+
+    def test_forward_scattering(self):
+        structure = Structure.from_atoms(self.xyz, ['C', 'O'])
+        calc = quiet_calculator(structure)
+        calc.set_q([1e-7, 1e-6])
+        calc.set_params(size_pd=0.2)
+        factors, shares = gaussian_sizes(0.2, 35, 3.0)
+        w = structure.sld * structure.volume
+        i0 = 1e8 * w.sum() ** 2 * np.sum(shares * factors**6)
+        i0 /= np.sum(shares * factors**3) * structure.volume.sum()
+        assert np.allclose(calc.calculate().intensity, i0, rtol=1e-9)
+
+    def test_sizes_reuse_one_spectrum_and_shrink_the_bin(self):
+        calls = []
+        calc = quiet_calculator(C60)
+        calc.set_params(size_pd=0.1)
+        profile = calc.calculate(progress=counting(calls))
+        assert profile.histogram_bin == pytest.approx(1e-3 / (0.3 * 1.3))
+        assert 'size_pd=0.1 over 35 sizes' in profile._process_text()
+        calls.clear()
+        calc.set_params(size_pd=0.05)  # a coarser bin: the finer cached one serves
+        assert calc.calculate(progress=counting(calls)).histogram_bin == profile.histogram_bin
+        assert calls == []
+
+    def test_pairs_over_sizes_warns_and_reports_progress(self):
+        calls = []
+        calc = quiet_calculator(C60)
+        calc.set_params(kernel='pairs', size_pd=0.1, size_pd_n=3)
+        with pytest.warns(UserWarning, match='for each of the 3 sizes'):
+            calc.calculate(progress=counting(calls))
+        assert calls[-1] == pytest.approx(1.0) and np.all(np.diff(calls) > 0)
+
+    def test_cell_size_check_uses_the_largest_size(self):
+        calc = quiet_calculator(sphere_pixels(radius=6.0, step=3.0))
+        calc.set_params(sld_solvent=6.34)
+        calc.set_q_grid(qmax=0.3)  # 0.3 * 3 < 1, but 1.3 * 0.3 * 3 > 1
+        calc.set_params(size_pd=0.1)
+        with pytest.warns(UserWarning, match='largest size factor 1.3'):
+            calc.calculate()
 
 
 # ============================================================================

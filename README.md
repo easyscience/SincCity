@@ -64,6 +64,22 @@ default). SasView calls the override `total_volume` and, when some points
 have zero contrast, also multiplies by the ratio of all points' volume to the
 scattering volume. This calculator does not.
 
+**Size polydispersity.** `set_params(size_pd=0.1)` sums blown-up and shrunk
+copies of the whole structure, as sasmodels does for `radius_pd`: `size_pd_n`
+size factors (35) evenly over ±`size_pd_nsigma` (3) standard deviations,
+factors at or below 0 dropped, each weighted by the Gaussian's height there.
+A factor f stretches every distance by f and every amplitude by f³, so
+
+```text
+I(q) = scale * 1e8 * Σ n_f f⁶ D(f q) / (Σ n_f f³ V_norm) + background
+```
+
+with the shares n_f adding up to 1, so `scale` stays a volume fraction. The
+lattice, histogram and average kernels evaluate their one distance spectrum
+at f·q for every size, which costs only the sums over q; `'pairs'` repeats
+the whole pair sum per size and warns. The automatic histogram bin and the
+cell-size warning use the largest factor, `1 + size_pd_nsigma * size_pd`.
+
 **Deuteration.** `set_params(deuterated=['CTA'])` gives the hydrogens of
 these residue names the SLD of D at `calculate()`; volumes are unchanged,
 since D and H have the same natural atomic volume. It needs a structure with
@@ -157,8 +173,10 @@ coords2sans.
 
   `'auto'` (the default) is `'lattice'` for pixels on a lattice and
   `'histogram'` for everything else. The histogram bin is `'auto'`:
-  `min(0.01 Å, 1e-3 / q_max)`, which keeps the rounding phase error below
+  `min(0.01 Å, 1e-3 / (q_max · f_max))`, with f_max the largest size factor
+  (1 without polydispersity), which keeps the rounding phase error below
   5e-4 rad; `histogram_bin=` sets it, and `profile.histogram_bin` records it.
+  A cached spectrum with a finer bin is reused.
   `'average'` reproduces SasView's `is_avg=True` and suits round aggregates
   above about 10⁵ atoms. `calculate(progress=...)` can report progress or
   stop the pair passes of `'histogram'` and `'pairs'`.
