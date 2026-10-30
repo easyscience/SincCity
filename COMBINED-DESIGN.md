@@ -254,7 +254,7 @@ Shared by `read_pdb` and `read_gro`, in this order, each step one function:
 
 1. **Select** the atoms of `residues` (all when None).
 2. **Unwrap** (when the box is known and `unwrap` allows): a molecule is a run of atoms
-   with one residue number; each molecule is made whole around its first atom, the
+   with one residue number and name; each molecule is made whole around its first atom, the
    aggregate centre is the circular mean of the molecule centres (unchanged by a split),
    each molecule moves by whole box lengths next to it. coords2sans's
    `_fix_periodic_wrapping`, verbatim. A note records the shift count. Works for one
@@ -559,6 +559,8 @@ Children should call `gsc.set_verbosity('quiet')`; the logger is per process.
 | default kernel for atoms and cells: `histogram` instead of `pairs` | I(q) moves by up to about 1e-4 relative; `profile.method` reads `'histogram'` | `set_params(kernel='pairs')` |
 | sasdata and plotly optional | `to_data1d`, `plot_points`, `plot_profile` raise `ImportError` without the extra | `pip install gsc[plot,sasdata]` |
 | PDB residue name from 4 columns; MD water names dropped | none for standard PDB files; `SOL` / `TIP3` water in MD-written PDB files is dropped with a note | `residues=` names exactly what to read |
+| PDB elements chosen per residue name | the element column is used only for a residue name whose atoms all fill it; otherwise every atom of that name is guessed from its atom name, and a PDB with guessed elements warns | `elements=` for that residue name |
+| `.gro` unwrapped by default | molecules that cross a box face move by whole box lengths, with a note counting the atoms moved; a zero box means no unwrapping | `unwrap=False` |
 | new `Structure` fields | default None; `from_arrays` unchanged | – |
 | `ScatteringProfile` fields | new fields; only the calculator constructs it | – |
 | `get_settings()` keys | more keys; old records replay | – |

@@ -221,7 +221,7 @@ class TestCalculator:
         )
         calc = quiet_calculator(sinccity.load(path, include_hetatm=True))
         settings = json.loads(json.dumps(calc.get_settings()))
-        assert settings['reader_options'] == {'include_hetatm': True, 'residues': None}
+        assert settings['reader_options']['include_hetatm'] is True
         replay = GenericScatteringCalculator.from_settings(settings)
         assert replay.structure.n_points == 2
 

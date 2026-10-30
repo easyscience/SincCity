@@ -86,7 +86,13 @@ class TestPdb:
         assert s.resnames.tolist() == ['CTAB', 'CTAB'] and s.resids.tolist() == [1, 1]
         assert s.names.tolist() == ['N1', 'C1']
         assert 'Skipped 2 water atoms.' in s.notes and 'BR x1' in ' '.join(s.notes)
-        assert s.reader_options == {'include_hetatm': False, 'residues': None}
+        assert s.reader_options == {
+            'include_hetatm': False,
+            'residues': None,
+            'masses': None,
+            'elements': None,
+            'unwrap': 'auto',
+        }
 
         selected = read_pdb(path, residues=['BR', 'SOL'])  # the whole selection
         assert selected.resnames.tolist() == ['BR', 'SOL'] and selected.notes == ()
@@ -144,8 +150,15 @@ class TestGro:
         assert s.symbols.tolist() == ['N', 'C', 'C', 'Cl', 'O']  # CA in CTA is carbon
         assert s.resids.tolist() == [1, 1, 1, 2, 3]
         assert 'pass residues=' in ' '.join(s.notes)
-        assert s.reader_options == {'residues': None}
-        selected = read_gro(path, residues=['CTA'])
+        assert s.reader_options == {
+            'residues': None,
+            'masses': None,
+            'elements': None,
+            'unwrap': 'auto',
+        }
+        assert s.element_sources == {'CL': 'names', 'CTA': 'names', 'SOL': 'names'}
+        assert 'CL -> Cl in CL' in ' '.join(s.notes)
+        selected = read_gro(path, residues=['CTA'], masses={'CTA': [14.007, 12.011, 12.011]})
         assert selected.n_points == 3 and selected.notes == ()
         with pytest.raises(StructureError, match='no atom of the residues NA'):
             read_gro(path, residues=['NA'])
@@ -154,7 +167,7 @@ class TestGro:
         atoms = [(12345, 'TIP3P', 'HW123', 1.23456789, -0.5, 2.0), (12345, 'TIP3P', 'OW', 0, 0, 0)]
         path = tmp_path / 'wide.gro'
         path.write_text(gro_text(atoms, ndec=6))
-        s = read_gro(path)
+        s = read_gro(path, unwrap=False)
         assert s.resnames.tolist() == ['TIP3P', 'TIP3P'] and s.names.tolist() == ['HW123', 'OW']
         assert s.resids.tolist() == [12345, 12345]
         assert np.allclose(s.xyz[0], [12.34568, -5.0, 20.0])
@@ -163,11 +176,59 @@ class TestGro:
         path = tmp_path / 'tri.gro'
         triclinic = '   5.0   5.0   5.0   0.0   0.0   2.5   0.0   0.0   0.0'
         path.write_text(gro_text(self.ATOMS[:3], box=triclinic))
-        s = read_gro(path)
+        with pytest.raises(StructureError, match='pass unwrap=False'):
+            read_gro(path)
+        s = read_gro(path, unwrap=False)
         assert s.box is None and 'triclinic' in ' '.join(s.notes)
         path.write_text('title\n  3\n')
         with pytest.raises(StructureError, match='not a readable .gro file'):
             read_gro(path)
+
+
+class TestUnwrapping:
+    # Two CTA molecules of a micelle in a 5 nm box. The second one is split by
+    # the x face: its second atom was written back at the other side.
+    SPLIT = [
+        (1, 'CTA', 'C1', 4.8, 2.0, 2.0),
+        (1, 'CTA', 'C2', 4.9, 2.0, 2.0),
+        (2, 'CTA', 'C1', 4.95, 2.1, 2.0),
+        (2, 'CTA', 'C2', 0.05, 2.1, 2.0),
+    ]
+
+    def test_split_aggregate_is_rejoined(self, tmp_path):
+        path = tmp_path / 'split.gro'
+        path.write_text(gro_text(self.SPLIT, box='   5.0   5.0   5.0'))
+        s = read_gro(path)
+        assert np.allclose(s.xyz[:, 0], [48.0, 49.0, 49.5, 50.5])
+        assert 'moved 1 atoms' in ' '.join(s.notes)
+        assert np.allclose(read_gro(path, unwrap=False).xyz[3, 0], 0.5)
+
+    def test_aggregate_across_the_face_and_a_whole_one(self, tmp_path):
+        across = [(1, 'CTA', 'C1', 4.9, 2.0, 2.0), (2, 'CTA', 'C1', 0.1, 2.0, 2.0)]
+        path = tmp_path / 'across.gro'
+        path.write_text(gro_text(across, box='   5.0   5.0   5.0'))
+        s = read_gro(path)
+        assert abs(s.xyz[1, 0] - s.xyz[0, 0]) == pytest.approx(2.0)  # neighbours again
+        path.write_text(gro_text(self.SPLIT[:2], box='   5.0   5.0   5.0'))
+        whole = read_gro(path)
+        assert np.allclose(whole.xyz[:, 0], [48.0, 49.0])
+        assert not any('Unwrapped' in note for note in whole.notes)
+
+    def test_pdb_unwraps_only_on_request(self, tmp_path):
+        atoms = [
+            pdb_line(i, 'C', 'CTA', x, 'C', resseq=resid)
+            for i, (resid, x) in enumerate([(1, 48.0), (1, 49.0), (2, 49.5), (2, 0.5)], 1)
+        ]
+        cryst = 'CRYST1   50.000   50.000   50.000  90.00  90.00  90.00 P 1           1'
+        path = tmp_path / 'box.pdb'
+        path.write_text('\n'.join([cryst, *atoms]) + '\n')
+        assert read_pdb(path).xyz[3, 0] == pytest.approx(0.5)
+        assert read_pdb(path, unwrap=True).xyz[3, 0] == pytest.approx(50.5)
+        path.write_text('\n'.join(atoms) + '\n')
+        with pytest.raises(StructureError, match='needs a periodic box'):
+            read_pdb(path, unwrap=True)
+        with pytest.raises(ValueError, match='unwrap must be'):
+            read_pdb(path, unwrap='yes')
 
 
 def test_load_notes_options_a_format_does_not_have(tmp_path):

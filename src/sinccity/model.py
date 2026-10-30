@@ -1,6 +1,7 @@
 """The real-space structure a scattering calculation runs on."""
 
 import copy
+import dataclasses
 import html
 from collections import Counter
 from dataclasses import dataclass, field
@@ -9,7 +10,6 @@ from typing import Any
 import numpy as np
 
 from ._console import ANGSTROM, CUBIC_ANGSTROM, SLD_UNIT
-from .molecules import residue_runs
 
 #: Partial specific volume of a typical protein, cm³/g.
 PROTEIN_SPECIFIC_VOLUME = 0.73
@@ -100,6 +100,9 @@ class Structure:
         lattice: The lattice the points sit on, pixels only.
         resids, resnames, names: Residue number, residue name and atom name
             per atom, from PDB and GRO files; None otherwise.
+        element_sources: Where the elements of each residue name came from:
+            ``'masses'``, ``'elements'``, ``'pdb'``, ``'names'`` (guessed) or
+            ``'given'`` (``from_atoms``). Empty without residue names.
         box: The rectangular periodic box the file declared, Å; None when it
             declared none, a placeholder or a triclinic one.
         reader_options: The options the reader was called with, every key
@@ -122,6 +125,7 @@ class Structure:
     resids: np.ndarray | None = None
     resnames: np.ndarray | None = None
     names: np.ndarray | None = None
+    element_sources: dict[str, str] = field(default_factory=dict)
     box: tuple[float, float, float] | None = None
     reader_options: dict[str, Any] | None = None
     source: str = 'in-memory'
@@ -156,15 +160,22 @@ class Structure:
         set_(self, 'sld', _owned(sld))
         set_(self, 'volume', _owned(volume))
         set_(self, 'notes', tuple(self.notes))
-        residue_data = [getattr(self, name) is not None for name in ('resids', 'resnames', 'names')]
-        if any(residue_data) and not (all(residue_data) and self.kind == 'atoms'):
-            raise StructureError('resids, resnames and names come together, and only for atoms.')
+        has_resids, has_resnames, has_names = (
+            getattr(self, name) is not None for name in ('resids', 'resnames', 'names')
+        )
+        if (has_resids or has_resnames or has_names) and not (
+            has_resids and has_resnames and self.kind == 'atoms'
+        ):
+            raise StructureError(
+                'resids and resnames come together, names only with them, and only for atoms.'
+            )
         for name, dtype in (('symbols', str), ('resids', int), ('resnames', str), ('names', str)):
             values = getattr(self, name)
             if values is not None:
                 if len(values) != n:
                     raise StructureError(f'{name} must have one entry per point.')
                 set_(self, name, _owned(values, dtype))
+        set_(self, 'element_sources', dict(self.element_sources))
         if self.box is not None:
             set_(self, 'box', tuple(float(length) for length in self.box))
         if self.reader_options is not None:
@@ -189,6 +200,61 @@ class Structure:
         xyz = np.asarray(xyz, dtype=float)
         lattice = detect_lattice(xyz) if xyz.ndim == 2 and xyz.shape[-1] == 3 else None
         return cls('pixels', xyz, sld, volume, lattice=lattice)
+
+    @classmethod
+    def from_atoms(
+        cls, xyz, symbols, *, resids=None, resnames=None, names=None, bonds=None
+    ) -> 'Structure':
+        """Build atoms whose SLD and volume come from their elements, as the readers do.
+
+        This is how atoms read by another program come in without a file.
+        Positions in Å.
+        """
+        from .elements import sld_volume
+
+        symbols = [str(symbol).capitalize() for symbol in symbols]
+        sld, volume = sld_volume(symbols)
+        sources = {} if resnames is None else dict.fromkeys(sorted(set(resnames)), 'given')
+        return cls(
+            'atoms',
+            xyz,
+            sld,
+            volume,
+            symbols=symbols,
+            bonds=bonds,
+            resids=resids,
+            resnames=resnames,
+            names=names,
+            element_sources=sources,
+        )
+
+    def with_symbols(self, symbols) -> 'Structure':
+        """A copy with corrected elements, and SLD and volumes recomputed from them.
+
+        The residue names whose elements change are recorded as
+        ``'elements'`` in ``element_sources``. The copy keeps the source, but no
+        reader made it, so its ``reader_options`` are None.
+        """
+        from .elements import sld_volume
+
+        if self.symbols is None:
+            raise StructureError('Only atoms have elements.')
+        symbols = np.array([str(symbol).capitalize() for symbol in symbols])
+        if symbols.shape != self.symbols.shape:
+            raise StructureError(f'{symbols.size} elements given for {self.n_points} atoms.')
+        sld, volume = sld_volume(symbols)
+        sources = dict(self.element_sources)
+        if self.resnames is not None:
+            changed = np.unique(self.resnames[symbols != self.symbols]).tolist()
+            sources.update(dict.fromkeys(changed, 'elements'))
+        return dataclasses.replace(
+            self,
+            symbols=symbols,
+            sld=sld,
+            volume=volume,
+            element_sources=sources,
+            reader_options=None,
+        )
 
     # ------------------------------------------------------------------ facts
 
@@ -269,8 +335,12 @@ class Structure:
         if self.cell_diameter is not None:
             info['max_cell_diameter'] = float(self.cell_diameter.max())
         if self.resids is not None:
-            info['n_residues'] = int(residue_runs(self.resids)[0].size)
+            from .molecules import residue_runs
+
+            info['n_residues'] = int(residue_runs(self.resids, self.resnames)[0].size)
             info['residue_atoms'] = dict(sorted(Counter(self.resnames.tolist()).items()))
+        if self.element_sources:
+            info['element_sources'] = dict(self.element_sources)
         if self.box is not None:
             info['box'] = list(self.box)
         return info
@@ -305,6 +375,9 @@ class Structure:
         if 'n_residues' in info:
             atoms = ', '.join(f'{name} x{count}' for name, count in info['residue_atoms'].items())
             rows.append(('Residues', f'{info["n_residues"]}; atoms per name: {atoms}'))
+        if self.element_sources:
+            sources = ', '.join(f'{name} {source}' for name, source in self.element_sources.items())
+            rows.append(('Elements from', sources))
         if self.box is not None:
             rows.append(('Box', f'{np.round(self.box, 3).tolist()} {ANGSTROM}'))
         rows.extend(('Note', note) for note in self.notes)
