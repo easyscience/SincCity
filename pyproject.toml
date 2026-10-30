@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "SincCity"
+version = "0.1.0"
+description = "Generic Scattering Calculator: I(q) of a real-space structure (PDB, SLD or VTK)"
+requires-python = ">=3.10"
+license = {text = "BSD-3-Clause"}
+authors = [
+    {name = "SincCity contributors"}
+]
+readme = "README.md"
+dependencies = [
+    "numpy>=2.0",
+    "plotly>=5.0",
+    "periodictable>=1.6",
+    "sasdata>=0.8",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# Linting and formatting follow the repository-wide ruff configuration in the
+# top-level pyproject.toml; there is deliberately no [tool.ruff] section here.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
