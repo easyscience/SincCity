@@ -140,7 +140,7 @@ def debye_pairs(
 
 
 def lattice_cells(shape) -> int:
-    """Cells in the zero-padded grid ``debye_lattice`` allocates for *shape*."""
+    """Cells in the zero-padded grid ``spectrum_lattice`` allocates for *shape*."""
     return int(np.prod([2 * n - 1 for n in shape]))
 
 
@@ -153,21 +153,26 @@ def spectrum_lattice(grid_b, grid_v, step) -> DistanceSpectrum:
         D(q) = sum_Δ [C_bb - 2 rho C_bv + rho^2 C_vv](Δ) sinc(q |Δ|)
 
     Lags are grouped by the exact integer key (|i|, |j|, |k|), so no
-    floating-point rounding enters the grouping. A lag is kept when some pair
-    of occupied sites has it, which an FFT of the occupation decides; the FFT
-    noise of empty lags is dropped with them.
+    floating-point rounding enters the grouping. A lag that some pair of
+    occupied sites has gets C_vv of at least the smallest volume squared, far
+    above the FFT noise of the empty lags, which are dropped.
 
     Args:
         grid_b: Scattering lengths on the grid, shape (nx, ny, nz); empty sites hold 0.
-        grid_v: Volumes on the same grid.
+        grid_v: Volumes on the same grid; positive at every occupied site.
         step: Lattice steps along x, y and z, Å.
+
+    Raises:
+        ValueError: If no site has a positive volume, or a site with a
+            scattering length has none.
     """
     grid_b = np.asarray(grid_b, dtype=float)
     grid_v = np.asarray(grid_v, dtype=float)
+    if not np.any(grid_v > 0) or np.any((grid_b != 0) & (grid_v <= 0)):
+        raise ValueError('Every occupied lattice site needs a positive volume.')
     shape = grid_b.shape
     padded = [2 * n - 1 for n in shape]
-    occupied = ((grid_b != 0) | (grid_v != 0)).astype(float)
-    fb, fv, fo = (np.fft.rfftn(g, s=padded, axes=(0, 1, 2)) for g in (grid_b, grid_v, occupied))
+    fb, fv = (np.fft.rfftn(g, s=padded, axes=(0, 1, 2)) for g in (grid_b, grid_v))
 
     # Index i of a padded axis of length m = 2n - 1 holds lag i for i < n and
     # lag i - m above that; only |lag| matters for the distance.
@@ -184,18 +189,13 @@ def spectrum_lattice(grid_b, grid_v, step) -> DistanceSpectrum:
                 weights=np.fft.irfftn(a * c.conj(), s=padded, axes=(0, 1, 2)).ravel(),
                 minlength=int(np.prod(shape)),
             )
-            for a, c in ((fb, fb), (fb, fv), (fv, fv), (fo, fo))
+            for a, c in ((fb, fb), (fb, fv), (fv, fv))
         ]
     )
     ix, iy, iz = np.unravel_index(np.arange(summed.shape[1]), shape)
     step = np.asarray(step, dtype=float)
     r = np.sqrt((ix * step[0]) ** 2 + (iy * step[1]) ** 2 + (iz * step[2]) ** 2)
-    return _occupied(r, summed[:3], keep=summed[3] > 0.5)  # pair counts are integers
-
-
-def debye_lattice(q, grid_w, step) -> np.ndarray:
-    """Exact Debye sum for weights *grid_w* on a rectangular lattice; see ``spectrum_lattice``."""
-    return spectrum_lattice(grid_w, np.zeros_like(grid_w, dtype=float), step).debye(q, 0.0)
+    return _occupied(r, summed, keep=summed[2] > 0.5 * grid_v[grid_v > 0].min() ** 2)
 
 
 def spectrum_histogram(

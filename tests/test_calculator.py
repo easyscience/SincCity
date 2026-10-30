@@ -327,6 +327,25 @@ class TestCalculator:
         profile.save_csv(tmp_path / 'profile.csv')
         assert np.loadtxt(tmp_path / 'profile.csv', delimiter=',').shape == (20, 2)
 
+    def test_settings_without_a_kernel_replay_the_kernel_of_0_1_0(self, tmp_path):
+        calc = quiet_calculator(C60)
+        calc.set_params(kernel='pairs')
+        recorded = calc.calculate().intensity
+        settings = calc.get_settings()
+        for key in ('kernel', 'histogram_bin', 'deuterated'):  # 0.1.0 had none of them
+            del settings['params'][key]
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')  # the guessed elements of c60.pdb
+            replay = GenericScatteringCalculator.from_settings(settings).calculate()
+        assert replay.method == 'pairs' and np.array_equal(replay.intensity, recorded)
+
+        path = tmp_path / 'pixels.sld'
+        corners = [f'{x} {y} {z} 1e-6' for x in (0, 2) for y in (0, 2) for z in (0, 2)]
+        path.write_text('\n'.join(['x y z sld', *corners]) + '\n')
+        pixels = quiet_calculator(sinccity.load(path)).get_settings()
+        del pixels['params']['kernel']
+        assert GenericScatteringCalculator.from_settings(pixels).get_params()['kernel'] == 'auto'
+
     def test_settings_replay_deuteration(self, tmp_path):
         path = tmp_path / 'cta.pdb'
         atoms = [('C1', 0.0, 'C'), ('H1', 1.1, 'H'), ('H2', -1.1, 'H')]

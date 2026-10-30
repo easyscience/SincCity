@@ -101,9 +101,9 @@ src/gsc/
     gro.py             NEW  read_gro
     sld.py             read_sld (unchanged)
     vtk.py             read_vtk (unchanged)
-  debye.py             _sinc_sum, debye_pairs, debye_lattice (as today);
-                       NEW  DistanceSpectrum, spectrum_lattice, spectrum_histogram,
-                            spectrum_radial, choose_kernel
+  debye.py             _sinc_sum, debye_pairs (as today);
+                       NEW  DistanceSpectrum, spectrum_lattice (replaces debye_lattice),
+                            spectrum_histogram, spectrum_radial
   dispersion.py        NEW  size factors and shares (Gaussian, sasmodels rule)
   calculator.py        GenericScatteringCalculator (+ calculate_series), ScatteringProfile
                             (extended)
@@ -300,15 +300,16 @@ but not on the solvent, and a sinc sum that depends on q and ρ. The pair pass r
 class DistanceSpectrum:
     r: np.ndarray            # distances, Å; only those with a non-zero component
     components: np.ndarray   # (3, n): bb, bv, vv  -- or (2, n): b, v when squared
-                             # -- or (1, n): ww (or w) at a fixed rho, the 7.5 fallback
     squared: bool            # False: D = Σ W sinc; True: D = (Σ A sinc)²
-    rho: float | None = None # the solvent of a (1, n) spectrum; None otherwise
 
     def debye(self, q, rho) -> np.ndarray:
         # pair form:  W(r) = bb − 2ρ bv + ρ² vv, then _sinc_sum(q, r, W)
         # squared:    A(q) = Σ (b − ρ v) sinc(q r), then A²
-        # (1, n):     _sinc_sum(q, r, ww); another rho is a ValueError
 ```
+
+The proposal also had a `(1, n)` form at a fixed ρ, as a fallback in case the three
+components made the pair pass too slow; PR 4a measured them within bounds (7.5), so it
+was not built.
 
 Every builder keeps only the distances where some component is non-zero: the histogram
 drops its empty bins, the lattice spectrum its empty lags. The sinc phase then costs
@@ -394,11 +395,12 @@ towards smaller spreads or a lower q_max does not repeat the pair pass. So the s
 pays the pair pass once per frame and deuteration state. The cache holds one entry; it
 is an optimisation, not state the user sees, and `get_settings()` ignores it.
 
-Cost to measure in PR 4a (section 13): three `bincount`s instead of one. The plan measured a
-prototype at about 3× the single histogram (7 s against 2.3 s). The pass is dominated by
-the matrix product, square root and rounding, so 1.5× is the expectation once the
-weights are formed in place. If it stays above 2×, PR 4b keeps the (1, n) spectrum of
-7.1 and puts ρ in the cache key; the interface does not change.
+Cost, measured in PR 4a: three `bincount`s instead of one take 1.69 s against 1.07 s for
+11,000 atoms, 1.6× (the plan's prototype was about 3×, 7 s against 2.3 s). That is within
+the 2× threshold set here, so the three components and the cache went in, and the
+(1, n) fallback with ρ in the cache key was not needed. The lattice spectrum takes 2
+forward and 3 inverse FFTs; it finds the lags some pair has from C_vv, which is at least
+the smallest volume squared there, so it needs no FFT of the occupation.
 
 ## 8. Calculator and profile
 
@@ -482,7 +484,9 @@ format.
 }
 ```
 
-`from_settings` fills missing keys with defaults, so 0.1.0 records still replay. The
+`from_settings` fills missing keys with defaults, so 0.1.0 records still replay, with
+one exception: a record without `kernel` replays with the kernel 0.1.0 used, `'auto'`
+for pixels on a lattice and `'pairs'` otherwise, so it gives the curve it recorded. The
 `masses` mapping is JSON as it is; a few hundred floats per residue type.
 
 `reader_options` is `structure.reader_options`, whether the structure came through
@@ -556,7 +560,7 @@ Children should call `gsc.set_verbosity('quiet')`; the logger is per process.
 
 | Change | Effect | Keep the old behaviour |
 |---|---|---|
-| default kernel for atoms and cells: `histogram` instead of `pairs` | I(q) moves by up to about 1e-4 relative; `profile.method` reads `'histogram'` | `set_params(kernel='pairs')` |
+| default kernel for atoms and cells: `histogram` instead of `pairs` | I(q) moves by up to about 1e-4 relative; `profile.method` reads `'histogram'`. A 0.1.0 settings record has no `kernel` and replays with `'pairs'` (`'auto'` for pixels on a lattice), as it was computed | `set_params(kernel='pairs')` |
 | sasdata and plotly optional | `to_data1d`, `plot_points`, `plot_profile` raise `ImportError` without the extra | `pip install gsc[plot,sasdata]` |
 | PDB residue name from 4 columns; MD water names dropped | none for standard PDB files; `SOL` / `TIP3` water in MD-written PDB files is dropped with a note | `residues=` names exactly what to read |
 | PDB elements chosen per residue name | the element column is used only for a residue name whose atoms all fill it; otherwise every atom of that name is guessed from its atom name, and a PDB with guessed elements warns | `elements=` for that residue name |
@@ -613,7 +617,7 @@ Ported from coords2sans, one test module per gsc module:
   form, 3 and 1500 atoms so blocks are crossed), bin width follows q_max and f_max, only
   non-empty bins kept (C60: fewer distances than pairs), ⟨A⟩² against
   the analytic sphere and the bounding-box centre, three-component spectrum against the
-  single-w sum, lattice spectrum against `debye_lattice`.
+  single-w sum, lattice spectrum against `debye_pairs` (only the lags of pairs kept).
 - `test_dispersion`: one size, Gaussian over ±3σ, dropped sizes, refusals.
 - `test_calculator`: sizes scale distances and volumes (closed form, both kernel
   families), background added once, `deuterated` equals a structure written with D,
@@ -643,6 +647,7 @@ the ones after it.
 | 3 | `deuterated()` and `set_params(deuterated=)` | G5 |
 | 4a | `DistanceSpectrum` with non-empty bins only; histogram, average and lattice spectra in the (1, n) form at the current solvent; `kernel`, `histogram_bin` (the 7.3 rule, f_max = 1 until PR 5); new warnings; `method` names; benchmark of the three-component pass against the single one | G6, G7 |
 | 4b | the b/v split (three components, two for `squared`) and the spectrum cache if the 4a benchmark stays within 2×; otherwise the cache on the (1, n) form with ρ in the key | plan section 10 |
+| | *Done as one PR: the benchmark gave 1.6×, so 4b's split and cache went in directly and the (1, n) form was never built* | |
 | 5 | `dispersion.py`; `size_pd*`; normalisation with sizes; f_max in the auto bin and the cell-size warning | G8 |
 | 6 | `label`, `calculate_series`, extended settings and summary, README merged with coords2sans's explanations (wrapping, elements, sizes), notebooks; release 0.2.0 | section 7, S1 |
 
@@ -653,7 +658,7 @@ Then shapespyer: S3 + S4, S1 + S6, S2, S5, as the plan orders them.
 | Question | Proposal | Why |
 |---|---|---|
 | default kernel for atoms | `histogram` (`auto`: lattice when possible, else histogram) | exact for any shape to 1e-4 at any q with the adaptive bin; one default for all sizes; `pairs` stays one keyword away |
-| one histogram per contrast or three | three (b·b, b·v, v·v) inside `DistanceSpectrum`, for every spectrum kernel | a contrast series is shapespyer's main loop; the cache makes it one pair pass per frame. Cost measured in PR 4a, decided in PR 4b, fallback defined in 7.5 |
+| one histogram per contrast or three | three (b·b, b·v, v·v) inside `DistanceSpectrum`, for every spectrum kernel | a contrast series is shapespyer's main loop; the cache makes it one pair pass per frame. Measured at 1.6× the single histogram (7.5), within the 2× threshold |
 | unwrap PDB from `CRYST1` | on request (`unwrap=True`), error on a missing or placeholder box | placeholder boxes are common; a silent wrong unwrap is worse than none |
 | report the `geni.Iq` bug | yes, as a SasView issue by whoever runs the validation; not part of any PR | outside the merge |
 
@@ -680,8 +685,8 @@ Then shapespyer: S3 + S4, S1 + S6, S2, S5, as the plan orders them.
 | Risk | Where | Mitigation |
 |---|---|---|
 | histogram as default surprises SasView-equivalence users | 7.4 | `kernel='pairs'`; `method` in every profile; 1e-4 documented |
-| three-component split loses digits near a match | 7.1 | points that match exactly are excluded before the pass; the near-match warning covers the rest; single-histogram fallback if PR 4a shows a problem |
-| three `bincount`s slow the pass | 7.5 | measured in PR 4a; threshold 2×; fallback keeps the interface |
+| three-component split loses digits near a match | 7.1 | points that match exactly are excluded before the pass; the near-match warning covers the rest |
+| three `bincount`s slow the pass | 7.5 | measured in PR 4a at 1.6×, within the 2× threshold |
 | under `'auto'`, a wider size spread or a higher q_max shrinks the bin and repeats the pair pass | 7.3, 7.5 | a finer cached bin is reused; set `histogram_bin` explicitly for a sweep |
 | unwrapping heuristics fail for several aggregates or one larger than half the box | 6.3 | documented; a note records the shifts; selection by residue number later |
 | masses that are no element's (HMR, united atom) | 6.3 | error with the residue name; `elements=` as the way out |

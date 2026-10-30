@@ -491,8 +491,7 @@ class GenericScatteringCalculator:
         sld = self._scattering_structure().sld
         rho = p['sld_solvent'] * 1e-6
         contrast = sld - rho
-        weight = contrast * structure.volume
-        active = weight != 0
+        active = contrast * structure.volume != 0
         n_zero = int(np.sum(~active))
         explicit = p['normalisation_volume'] != 'auto'
         start = time.perf_counter()
@@ -512,9 +511,7 @@ class GenericScatteringCalculator:
             )
             method = self._kernel(structure, active, p['kernel'])
             self._check(structure, contrast, active, notes)
-            debye, bin_width = self._debye(
-                method, structure, sld, weight, active, p, progress, notes
-            )
+            debye, bin_width = self._debye(method, structure, sld, active, progress, notes)
             intensity = p['scale'] * 1e8 * debye / v_norm + p['background']
 
         summary = {
@@ -617,15 +614,19 @@ class GenericScatteringCalculator:
             )
         return requested
 
-    def _bin_width(self, params: dict[str, Any]) -> float:
+    def _bin_width(self) -> float:
         """The histogram bin, Å: as set, or the largest that keeps the phase error small."""
-        if params['histogram_bin'] != 'auto':
-            return params['histogram_bin']
+        if self._params['histogram_bin'] != 'auto':
+            return self._params['histogram_bin']
         return min(HISTOGRAM_BIN_MAX, HISTOGRAM_PHASE / self._q[-1])
 
-    def _debye(self, kernel, structure, sld, weight, active, params, progress, notes):
-        """D(q) by *kernel*, and the histogram bin used (None for other kernels)."""
+    def _debye(self, kernel, structure, sld, active, progress, notes):
+        """D(q) of the *active* points with SLDs *sld*, and the histogram bin used.
+
+        The bin is None for kernels other than the histogram.
+        """
         q = self._q
+        rho = self._params['sld_solvent'] * 1e-6
         n = int(active.sum())
         last = [time.monotonic()]
 
@@ -642,23 +643,24 @@ class GenericScatteringCalculator:
                     f'{n} scattering points: the exact pair sum scales as N^2 and may take many '
                     "minutes; kernel='histogram' gives the same to about 1e-4 in a fraction of it.",
                 )
-            return debye_pairs(q, structure.xyz[active], weight[active], progress=report), None
+            weight = (sld[active] - rho) * structure.volume[active]
+            return debye_pairs(q, structure.xyz[active], weight, progress=report), None
         if kernel == 'average':
             notes.append(
                 '<A>^2 kernel: exact only for spherically symmetric structures; the result '
                 'depends on the centre.'
             )
-        bin_width = self._bin_width(params) if kernel == 'histogram' else None
-        spectrum, bin_width = self._spectrum(
-            kernel, structure, sld, active, params['deuterated'], bin_width, report, notes
-        )
-        return spectrum.debye(q, params['sld_solvent'] * 1e-6), bin_width
+        spectrum, bin_width = self._spectrum(kernel, structure, sld, active, report, notes)
+        return spectrum.debye(q, rho), bin_width
 
-    def _spectrum(self, kernel, structure, sld, active, deuterated, bin_width, progress, notes):
-        """The distance spectrum of the active points: the cached one when it still applies.
+    def _spectrum(self, kernel, structure, sld, active, progress, notes):
+        """The distance spectrum of the *active* points, and the histogram bin it has.
 
-        A cached histogram with a finer bin than *bin_width* is reused.
+        The cached spectrum is reused when it still applies, a cached histogram
+        with a finer bin than the one needed included.
         """
+        deuterated = self._params['deuterated']
+        bin_width = self._bin_width() if kernel == 'histogram' else None
         if self._cache is not None:
             c_structure, c_deuterated, c_kernel, c_active, c_bin, spectrum = self._cache
             if (
@@ -768,5 +770,7 @@ class GenericScatteringCalculator:
             calculator.set_q_grid(**settings['q_grid'])
         else:
             calculator.set_q(settings['q'])
-        calculator.set_params(**settings['params'])
+        # A record without a kernel (0.1.0) replays with the kernel that made it.
+        legacy = {'kernel': 'auto' if structure.lattice is not None else 'pairs'}
+        calculator.set_params(**{**legacy, **settings['params']})
         return calculator

@@ -6,7 +6,6 @@ from support import C60, Q, brute, close, quiet_calculator, sphere_pixels
 
 from sinccity import CalculationInterrupted, Structure
 from sinccity.debye import (
-    debye_lattice,
     debye_pairs,
     spectrum_histogram,
     spectrum_lattice,
@@ -40,16 +39,6 @@ class TestKernels:
         )
         moved = xyz @ rotation.T + [10, -3, 4]
         assert close(debye_pairs(Q, xyz, w), debye_pairs(Q, moved, w), w)
-
-    def test_lattice_path_equals_pair_sum(self):
-        rng = np.random.default_rng(2)
-        grid = rng.normal(size=(8, 6, 5)) * (rng.random((8, 6, 5)) < 0.6)
-        step = (3.0, 2.0, 4.5)
-        index = np.argwhere(grid != 0)
-        w = grid[grid != 0]
-        lattice = debye_lattice(Q, grid, step)
-        assert close(lattice, debye_pairs(Q, index * np.array(step), w), w)
-        assert np.all(lattice >= -1e-12 * np.abs(w).sum() ** 2)  # D is an average of |A|^2
 
     def test_progress_can_stop_the_pair_loop(self):
         xyz = np.random.default_rng(3).normal(size=(50, 3))
@@ -97,16 +86,26 @@ class TestSpectra:
         assert spectrum.r.size < n * (n - 1) // 2  # C60 has few distinct distances
         assert np.all(np.any(spectrum.components != 0, axis=0))
 
-    def test_lattice_spectrum_against_debye_lattice(self):
-        rng = np.random.default_rng(7)
-        occupied = rng.random((6, 5, 4)) < 0.5
+    def test_lattice_spectrum_equals_the_pair_sum(self):
+        rng = np.random.default_rng(2)
+        occupied = rng.random((8, 6, 5)) < 0.6
         grid_b = rng.normal(size=occupied.shape) * occupied
-        grid_v = rng.random(occupied.shape) * occupied
-        spectrum = spectrum_lattice(grid_b, grid_v, (2.0, 3.0, 1.5))
-        rho = 0.3
-        reference = debye_lattice(Q, grid_b - rho * grid_v, (2.0, 3.0, 1.5))
-        assert close(spectrum.debye(Q, rho), reference, (grid_b - rho * grid_v)[occupied])
-        assert spectrum.r.size < 6 * 5 * 4  # lags no pair has are dropped
+        grid_v = (rng.random(occupied.shape) + 0.5) * occupied
+        step = (3.0, 2.0, 4.5)
+        xyz = np.argwhere(occupied) * np.array(step)
+        spectrum = spectrum_lattice(grid_b, grid_v, step)
+        for rho in (0.0, 0.3):
+            w = (grid_b - rho * grid_v)[occupied]
+            lattice = spectrum.debye(Q, rho)
+            assert close(lattice, debye_pairs(Q, xyz, w), w)
+            assert np.all(lattice >= -1e-12 * np.abs(w).sum() ** 2)  # D is an average of |A|^2
+
+    def test_lattice_spectrum_keeps_only_the_lags_of_pairs(self):
+        sites = np.zeros((4, 1, 1))
+        sites[[0, 3]] = 1.0
+        assert np.allclose(spectrum_lattice(sites, sites, (2.0, 1.0, 1.0)).r, [0.0, 6.0])
+        with pytest.raises(ValueError, match='positive volume'):
+            spectrum_lattice(sites, sites * 0, (2.0, 1.0, 1.0))
 
     def test_radial_spectrum_is_the_squared_amplitude_about_the_centre(self):
         rng = np.random.default_rng(8)
@@ -164,11 +163,14 @@ class TestPhysics:
     @pytest.mark.slow
     def test_pair_loop_agrees_with_lattice_path_on_the_sphere(self):
         structure = sphere_pixels()
-        w = (structure.sld - 6.34e-6) * structure.volume
+        rho = 6.34e-6
+        w = (structure.sld - rho) * structure.volume
         active = w != 0
         index = structure.lattice.indices[active]
-        grid = np.zeros(tuple(index.max(0) + 1))
-        np.add.at(grid, tuple(index.T), w[active])
+        grid_b, grid_v = np.zeros(tuple(index.max(0) + 1)), np.zeros(tuple(index.max(0) + 1))
+        np.add.at(grid_b, tuple(index.T), (structure.sld * structure.volume)[active])
+        np.add.at(grid_v, tuple(index.T), structure.volume[active])
         q = np.geomspace(1e-3, 0.3, 10)
         pairs = debye_pairs(q, structure.xyz[active], w[active])
-        assert close(debye_lattice(q, grid, structure.lattice.step), pairs, w)
+        lattice = spectrum_lattice(grid_b, grid_v, structure.lattice.step).debye(q, rho)
+        assert close(lattice, pairs, w)
