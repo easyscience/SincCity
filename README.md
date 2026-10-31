@@ -1,4 +1,4 @@
-# SincCity — Generic Scattering Calculator
+# SincCity: Generic Scattering Calculator
 
 The orientationally averaged I(q) of a real-space structure, by the Debye
 formula: atoms from a **PDB** or GROMACS **GRO** file, pixels from a
