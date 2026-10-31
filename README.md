@@ -7,6 +7,10 @@ nuclear, 1D part of SasView's *Generic Scattering Calculator*, as a plain
 Python package for scripts and notebooks. There are no 2D, magnetic or
 polarisation options.
 
+The name comes from the sinc function, sinc x = sin x / x, at the heart of
+the Debye formula: every pair of points a distance r apart adds its weight
+times sinc(q r) to the intensity.
+
 `sinccity` is developed alongside [IQuana](https://github.com/ai4se1dk/IQuana)
 but does not depend on it. The common interface is `profile.to_data1d()`, which
 returns a sasdata `Data1D` that `IQuana.set_data` can ingest.
