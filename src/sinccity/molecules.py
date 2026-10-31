@@ -1,4 +1,4 @@
-"""Residue-level steps shared by the PDB and GRO readers and by :class:`Structure`.
+"""Residue-level steps shared by the PDB and GRO readers and by ``Structure``.
 
 Unwrapping and element assignment follow coords2sans. A residue (a molecule)
 is a run of atoms with one residue number and name.
@@ -61,7 +61,7 @@ def assign_elements(
 
     The sources, in order: ``masses``, ``elements``, the PDB element column
     (*file_elements*, used when filled for every atom of the residue), and a
-    guess from the atom names (*guesses*, or :func:`guess_stem` when None).
+    guess from the atom names (*guesses*, or ``guess_stem`` when None).
     Masses and element lists are matched by the atom's position inside its
     residue, so structure and topology atom names may differ.
 

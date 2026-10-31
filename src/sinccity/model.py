@@ -443,7 +443,7 @@ class Structure:
         return f'<Structure {self.kind}: {self.n_points} points from {self.source}>'
 
     def plot_points(self, **kwargs: Any):
-        """Draw the points in 3D; see :func:`sinccity.plotting.plot_points`."""
+        """Draw the points in 3D; see ``sinccity.plotting.plot_points``."""
         from .plotting import plot_points
 
         return plot_points(self, **kwargs)

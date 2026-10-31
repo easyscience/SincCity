@@ -97,7 +97,7 @@ def plot_points(
     """Draw a structure's points in 3D, with equal length scales on every axis.
 
     Args:
-        structure: A :class:`~sinccity.Structure`.
+        structure: A ``sinccity.Structure``.
         color: ``'element'`` (atoms), ``'sld'``, or ``'auto'``: element for
             atoms, SLD otherwise.
         sld_solvent: Solvent SLD, 10⁻⁶ Å⁻². In SLD colouring, points that
