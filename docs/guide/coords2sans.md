@@ -21,5 +21,5 @@ places.
 Two rules differ on purpose. PDB files without an element column use
 SasView's name rule (` CA ` is carbon), and in `.gro` files a two-letter
 element name counts only in a one-atom residue (so `CA` in a protein is
-carbon). V_norm is the volume of the atoms that scatter, which equals
+carbon). $V_\mathrm{norm}$ is the volume of the atoms that scatter, which equals
 coords2sans's volume of all atoms unless an atom matches the solvent.

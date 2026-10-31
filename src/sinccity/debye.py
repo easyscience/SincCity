@@ -1,11 +1,14 @@
-"""Debye sums for a set of point scatterers.
+r"""Debye sums for a set of point scatterers.
 
-Every kernel computes the same quantity::
+Every kernel computes the same quantity:
 
-    D(q) = sum_j sum_k w_j w_k sin(q r_jk) / (q r_jk),    w_j = b_j - rho v_j
+$$
+D(q) = \sum_j \sum_k w_j w_k \operatorname{sinc}(q r_{jk}), \qquad
+w_j = b_j - \rho v_j, \qquad \operatorname{sinc} x = \frac{\sin x}{x}
+$$
 
-for scattering lengths ``b`` (Å), volumes ``v`` (Å³) and a solvent SLD
-``rho`` (Å⁻²), at positions in Å. ``debye_pairs`` enumerates pairs and works
+for scattering lengths $b$ (Å), volumes $v$ (Å³) and a solvent SLD
+$\rho$ (Å⁻²), at positions in Å. ``debye_pairs`` enumerates pairs and works
 for any point set. The spectrum builders first collect the pairs into a
 ``DistanceSpectrum``, a list of distances with the weights b·b, b·v and
 v·v kept apart, so another solvent costs only the sinc sums:
@@ -64,14 +67,15 @@ def _sinc_sum(q: np.ndarray, r: np.ndarray, weight: np.ndarray) -> np.ndarray:
 
 @dataclass(frozen=True, eq=False)
 class DistanceSpectrum:
-    """The part of a Debye sum that does not depend on q or the solvent.
+    r"""The part of a Debye sum that does not depend on q or the solvent.
 
     Attributes:
         r: Distances, Å; only those with a non-zero component.
-        components: ``(3, n)``: the summed pair weights b·b, b·v and v·v at
-            each distance, so that ``D = sum (bb - 2 rho bv + rho^2 vv) sinc(q r)``.
-            For a squared spectrum ``(2, n)``: b and v at each distance, so
-            that ``D = (sum (b - rho v) sinc(q r))^2``.
+        components: ``(3, n)``: the summed pair weights $bb$, $bv$ and $vv$ at
+            each distance, so that
+            $D = \sum_r (bb - 2 \rho\, bv + \rho^2 vv) \operatorname{sinc}(q r)$.
+            For a squared spectrum ``(2, n)``: $b$ and $v$ at each distance, so
+            that $D = \left(\sum_r (b - \rho v) \operatorname{sinc}(q r)\right)^2$.
         squared: Which of the two forms.
     """
 
@@ -145,17 +149,21 @@ def lattice_cells(shape) -> int:
 
 
 def spectrum_lattice(grid_b, grid_v, step) -> DistanceSpectrum:
-    """The exact spectrum of weights on a rectangular lattice.
+    r"""The exact spectrum of weights on a rectangular lattice.
 
-    On a lattice every pair displacement is an integer vector Δ, so::
+    On a lattice every pair displacement is an integer vector $\Delta$, so the
+    pair weights are correlations of two grids, such as
 
-        C_bv(Δ) = sum_x b(x) v(x + Δ)          (correlation of two grids)
-        D(q) = sum_Δ [C_bb - 2 rho C_bv + rho^2 C_vv](Δ) sinc(q |Δ|)
+    $$
+    C_{bv}(\Delta) = \sum_x b(x)\, v(x + \Delta), \qquad
+    D(q) = \sum_\Delta \left[C_{bb} - 2 \rho\, C_{bv} + \rho^2 C_{vv}\right](\Delta)
+    \operatorname{sinc}(q |\Delta|)
+    $$
 
-    Lags are grouped by the exact integer key (|i|, |j|, |k|), so no
+    Lags are grouped by the exact integer key $(|i|, |j|, |k|)$, so no
     floating-point rounding enters the grouping. A lag that some pair of
-    occupied sites has gets C_vv of at least the smallest volume squared, far
-    above the FFT noise of the empty lags, which are dropped.
+    occupied sites has gets $C_{vv}$ of at least the smallest volume squared,
+    far above the FFT noise of the empty lags, which are dropped.
 
     Args:
         grid_b: Scattering lengths on the grid, shape (nx, ny, nz); empty sites hold 0.
@@ -256,10 +264,11 @@ def spectrum_histogram(
 
 
 def spectrum_radial(xyz, b, v, centre) -> DistanceSpectrum:
-    """The squared spectrum ⟨A⟩²: each point's distance from *centre*, Å.
+    r"""The squared spectrum ⟨A⟩²: each point's distance from *centre*, Å.
 
-    The orientation-averaged amplitude is ``A(q) = sum_j w_j sinc(q |x_j - centre|)``,
-    and ``A(q)^2`` equals D(q) only for spherically symmetric structures.
+    The orientation-averaged amplitude about the centre $c$ is
+    $A(q) = \sum_j w_j \operatorname{sinc}(q |x_j - c|)$, and $A(q)^2$ equals
+    $D(q)$ only for spherically symmetric structures.
     """
     r = np.linalg.norm(np.asarray(xyz, dtype=float) - np.asarray(centre, dtype=float), axis=1)
     return DistanceSpectrum(r, np.array([b, v], dtype=float), squared=True)

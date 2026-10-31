@@ -4,11 +4,17 @@
 
 `calculate()` sums over all points:
 
-```text
-w_j  = (sld_j - sld_solvent * 1e-6) * volume_j        SLD in Å^-2, volume in Å^3
-D(q) = Σ_j Σ_k w_j w_k sin(q r_jk) / (q r_jk)
-I(q) = scale * 1e8 * D(q) / V_norm + background       1/cm
-```
+$$
+\begin{aligned}
+w_j &= (\rho_j - \rho_s)\, V_j \\
+D(q) &= \sum_j \sum_k w_j w_k \, \frac{\sin(q r_{jk})}{q r_{jk}} \\
+I(q) &= \mathrm{scale} \cdot 10^8 \, \frac{D(q)}{V_\mathrm{norm}} + \mathrm{background}
+\end{aligned}
+$$
+
+with $\rho_j$ the SLD of point $j$ in Å⁻², $\rho_s$ = `sld_solvent` × 10⁻⁶
+Å⁻², $V_j$ its volume in Å³ and $r_{jk}$ in Å. The factor $10^8$ turns Å⁻¹
+into cm⁻¹, the unit of $I$.
 
 `sld_solvent` is in 10⁻⁶ Å⁻², like every sasmodels SLD parameter. SasView's
 calculator takes Å⁻² instead; a value that looks like Å⁻² triggers a warning.
@@ -16,7 +22,7 @@ The structure's own SLDs stay in Å⁻², as the files store them.
 
 ## Normalisation
 
-`V_norm` is the volume of the points that scatter, those whose SLD differs
+$V_\mathrm{norm}$ is the volume of the points that scatter, those whose SLD differs
 from the solvent's. For a particle of pixels or cells in a box of solvent, the
 curve at `scale=1` then equals sasmodels' form factor at `scale=1`, so `scale`
 is a volume fraction.
@@ -33,17 +39,17 @@ volume to the scattering volume. This calculator does not.
 `set_params(size_pd=0.1)` sums blown-up and shrunk copies of the whole
 structure, as sasmodels does for `radius_pd`: `size_pd_n` size factors (35)
 evenly over ±`size_pd_nsigma` (3) standard deviations, factors at or below 0
-dropped, each weighted by the Gaussian's height there. A factor f stretches
-every distance by f and every amplitude by f³, so
+dropped, each weighted by the Gaussian's height there. A factor $f$ stretches
+every distance by $f$ and every amplitude by $f^3$, so
 
-```text
-I(q)   = scale * 1e8 * Σ n_f f⁶ D(f q) / V_norm + background
-V_norm = Σ n_f f³ V                     V: the volume of the points that scatter
-```
+$$
+I(q) = \mathrm{scale} \cdot 10^8 \, \frac{\sum_f n_f f^6 D(f q)}{V_\mathrm{norm}}
++ \mathrm{background}, \qquad V_\mathrm{norm} = \sum_f n_f f^3 V
+$$
 
-with the shares n_f adding up to 1, so `scale` stays a volume fraction. The
-lattice, histogram and average kernels evaluate their one distance spectrum at
-f·q for every size, which costs only the sums over q; `'pairs'` repeats the
+with $V$ the volume of the points that scatter and the shares $n_f$ adding up
+to 1, so `scale` stays a volume fraction. The lattice, histogram and average
+kernels evaluate their one distance spectrum at $f q$ for every size, which costs only the sums over q; `'pairs'` repeats the
 whole pair sum per size and warns. The automatic histogram bin and the
 cell-size warning use the largest factor, `1 + size_pd_nsigma * size_pd`.
 
@@ -68,9 +74,10 @@ records it.
 `'auto'` (the default) is `'lattice'` for pixels on a lattice and
 `'histogram'` for everything else.
 
-The histogram bin is `'auto'`: `min(0.01 Å, 1e-3 / (q_max · f_max))`, with
-f_max the largest size factor (1 without polydispersity), which keeps the
-rounding phase error below 5e-4 rad; `histogram_bin=` sets it, and
+The histogram bin is `'auto'`:
+$\min\left(0.01~\text{Å},\ 10^{-3} / (q_\mathrm{max} f_\mathrm{max})\right)$,
+with $f_\mathrm{max}$ the largest size factor (1 without polydispersity),
+which keeps the rounding phase error below $5 \cdot 10^{-4}$ rad; `histogram_bin=` sets it, and
 `profile.histogram_bin` records it. A cached spectrum with a finer bin is
 reused.
 
