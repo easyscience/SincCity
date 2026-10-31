@@ -8,9 +8,8 @@ Python package for scripts and notebooks. There are no 2D, magnetic or
 polarisation options.
 
 `sinccity` is developed alongside [IQuana](https://github.com/ai4se1dk/IQuana)
-but does not depend on it. The two meet through `profile.to_data1d()`, which
-returns a sasdata `Data1D` that `IQuana.set_data` (or any other sasdata
-consumer) accepts.
+but does not depend on it. The common interface is `profile.to_data1d()`, which
+returns a sasdata `Data1D` that `IQuana.set_data` can ingest.
 
 ## Installation
 
