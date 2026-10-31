@@ -1,7 +1,7 @@
 """Readers for PDB, GRO, SLD and legacy VTK structure files.
 
-All readers return a :class:`Structure` with positions in Å and SLD in Å⁻²,
-raise :class:`StructureError` on unusable input, and record the file's
+All readers return a ``Structure`` with positions in Å and SLD in Å⁻²,
+raise ``StructureError`` on unusable input, and record the file's
 SHA-256. Behaviour follows SasView's Generic Scattering Calculator readers
 (``sas.sascalc.calculator.sas_gen``, BSD-3-Clause, Copyright (c) 2009-2026,
 SasView Developers), with the deviations documented in the package README: the
@@ -223,7 +223,9 @@ def read_pdb(
         include_hetatm: Also read ``HETATM`` records.
         residues: The residue names to read. When given, it is the whole
             selection: the water and ``HETATM`` rules do not apply.
-        masses, elements, unwrap: As :func:`load` takes them.
+        masses: As ``load`` takes it.
+        elements: As ``load`` takes it.
+        unwrap: As ``load`` takes it.
     """
     path, sha = _source(path)
     options = {
@@ -375,14 +377,16 @@ def read_gro(path, *, residues=None, masses=None, elements=None, unwrap='auto') 
     with ``-ndec``. Positions are converted from nm to Å; velocities are
     ignored. The box on the last line is used for unwrapping. Elements per
     residue name come from ``masses``, ``elements``, or a guess from the atom
-    names (see :func:`sinccity.elements.guess_stem`), in that order.
+    names (see ``sinccity.elements.guess_stem``), in that order.
 
     Args:
         path: The ``.gro`` file.
         residues: The residue names to read. A solvated system needs it: there
             is no water rule, and the reader notes when it reads more than one
             residue name without a selection.
-        masses, elements, unwrap: As :func:`load` takes them.
+        masses: As ``load`` takes it.
+        elements: As ``load`` takes it.
+        unwrap: As ``load`` takes it.
     """
     path, sha = _source(path)
     options = _residue_options(residues, masses, elements, unwrap)

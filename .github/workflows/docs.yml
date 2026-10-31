@@ -1,0 +1,47 @@
+# Build the documentation on every push; a tag v<version> also deploys it to
+# GitHub Pages (https://easyscience.github.io/SincCity/).
+
+name: Docs
+
+on:
+  push:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - run: python -m pip install ".[docs]"
+      # --strict: a broken link or a docstring griffe cannot parse fails the build.
+      - run: mkdocs build --strict
+        env:
+          NO_MKDOCS_2_WARNING: '1'
+      - if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: site/
+
+  deploy:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

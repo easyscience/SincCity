@@ -317,7 +317,7 @@ class ScatteringProfile:
         return f'<table>{cells}</table>'
 
     def plot(self, *, data=None, log_scale: bool = True, show: bool | None = None):
-        """Plot I(q); see :func:`sinccity.plotting.plot_profile`."""
+        """Plot I(q); see ``sinccity.plotting.plot_profile``."""
         from .plotting import plot_profile
 
         return plot_profile(self, data=data, log_scale=log_scale, show=show)
@@ -384,14 +384,14 @@ class GenericScatteringCalculator:
 
         Args:
             path: The structure file.
-            **reader_options: As :func:`sinccity.load` takes them.
+            **reader_options: As ``sinccity.load`` takes them.
         """
         structure = load(path, **reader_options)
         self._install(structure)
         return structure
 
     def set_structure(self, structure: Structure) -> None:
-        """Use an existing :class:`Structure`, for example one from ``sinccity.load``."""
+        """Use an existing ``Structure``, for example one from ``sinccity.load``."""
         if not isinstance(structure, Structure):
             raise TypeError(f'Expected a Structure, got {type(structure).__name__}.')
         self._install(structure)
@@ -530,7 +530,7 @@ class GenericScatteringCalculator:
     def calculate(
         self, *, progress: Callable[[float], bool | None] | None = None, label: str | None = None
     ) -> ScatteringProfile:
-        """Compute I(q) on the current grid and return a :class:`ScatteringProfile`.
+        """Compute I(q) on the current grid and return a ``ScatteringProfile``.
 
         Args:
             progress: Optional callback for long pair passes. It receives the

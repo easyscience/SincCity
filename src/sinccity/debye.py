@@ -7,7 +7,7 @@ Every kernel computes the same quantity::
 for scattering lengths ``b`` (Å), volumes ``v`` (Å³) and a solvent SLD
 ``rho`` (Å⁻²), at positions in Å. ``debye_pairs`` enumerates pairs and works
 for any point set. The spectrum builders first collect the pairs into a
-:class:`DistanceSpectrum`, a list of distances with the weights b·b, b·v and
+``DistanceSpectrum``, a list of distances with the weights b·b, b·v and
 v·v kept apart, so another solvent costs only the sinc sums:
 
 - ``spectrum_lattice``: the autocorrelation of weight grids, exact for points
@@ -216,7 +216,8 @@ def spectrum_histogram(
 
     Args:
         xyz: Positions, shape (N, 3), Å.
-        b, v: Scattering lengths and volumes, shape (N,).
+        b: Scattering lengths, shape (N,).
+        v: Volumes, shape (N,).
         bin_width: Bin width, Å.
         block: Rows per block. Defaults to about ``HISTOGRAM_BLOCK_PAIRS`` pairs.
         progress: Called with the completed fraction after each block. A
